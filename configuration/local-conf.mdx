@@ -1,0 +1,265 @@
+---
+title: "local.conf"
+description: "Configure ZeroTier One's local node behavior with the local.conf JSON file."
+---
+
+`local.conf` is an optional JSON configuration file that controls the behavior of the local ZeroTier One node. It lives in the ZeroTier home directory and is read at startup and periodically reloaded while running. ZeroTier may also write to this file, so always use valid JSON.
+
+<Note>
+  The file does not exist by default. Create it if you need to change any settings. To validate your JSON before deploying, paste the contents into [jsonlint.com](https://jsonlint.com) or run `jq . local.conf`.
+</Note>
+
+## Home directory locations
+
+<Tabs>
+  <Tab title="Linux">
+    ```
+    /var/lib/zerotier-one/local.conf
+    ```
+  </Tab>
+  <Tab title="macOS">
+    ```
+    /Library/Application Support/ZeroTier/One/local.conf
+    ```
+  </Tab>
+  <Tab title="Windows">
+    ```
+    C:\ProgramData\ZeroTier\One\local.conf
+    ```
+  </Tab>
+</Tabs>
+
+## Top-level structure
+
+`local.conf` has three top-level JSON objects:
+
+```json
+{
+  "physical": { },
+  "virtual":  { },
+  "settings": { }
+}
+```
+
+| Section    | Purpose |
+|------------|---------|
+| `physical` | Rules applied to physical L2/L3 network paths (by CIDR prefix) |
+| `virtual`  | Per-peer hints and blacklists (by 10-digit ZeroTier address) |
+| `settings` | Global node settings |
+
+---
+
+## `physical` section
+
+Each key is a network prefix in CIDR notation (e.g. `10.0.0.0/24` or `fd00::/32`). The settings inside apply to any physical path that falls within that prefix.
+
+```json
+"physical": {
+  "10.0.0.0/24": {
+    "blacklist": true
+  },
+  "10.10.10.0/24": {
+    "trustedPathId": 101010024,
+    "mtu": 1400
+  }
+}
+```
+
+<ParamField body="blacklist" type="boolean" default="false">
+  If `true`, ZeroTier will not use any physical path that falls within this network for any traffic. Useful for excluding VPN interfaces, loopbacks, or interfaces you know are unreliable.
+</ParamField>
+
+<ParamField body="trustedPathId" type="integer" default="0">
+  When set to a non-zero integer, designates this network as a **trusted path**. Traffic over a trusted path bypasses ZeroTier's encryption and authentication, providing a significant performance boost on trusted local networks such as a datacenter fabric.
+
+  <Warning>
+    All nodes communicating over a trusted path **must have the same `trustedPathId` value** configured for the same network prefix, or communication will fail. Only use trusted paths on networks you fully control and trust.
+  </Warning>
+</ParamField>
+
+<ParamField body="mtu" type="integer" default="0">
+  Overrides the UDP payload MTU for paths in this network. When set to a non-zero value, ZeroTier will limit UDP payload size to this value for paths within the prefix. Useful when an intermediate network has a non-standard MTU.
+</ParamField>
+
+---
+
+## `virtual` section
+
+Each key is a 10-digit hex ZeroTier node address. Settings apply only when communicating with that specific peer.
+
+```json
+"virtual": {
+  "feedbeef12": {
+    "try": [ "10.10.20.1/9993" ],
+    "blacklist": [ "192.168.0.0/24" ]
+  }
+}
+```
+
+<ParamField body="try" type="string[]">
+  An array of `IP/port` strings that serve as hints on where to find this peer when no roots or upstreams are reachable. This is not a permanent route; ZeroTier will still attempt normal peer discovery in parallel.
+
+  ```json
+  "try": [ "203.0.113.10/9993", "2001:db8::1/9993" ]
+  ```
+</ParamField>
+
+<ParamField body="blacklist" type="string[]">
+  An array of network prefixes (CIDR) to blacklist for **this peer only**. Paths that match these prefixes will not be used when communicating with this specific peer, even if they are otherwise valid.
+
+  ```json
+  "blacklist": [ "192.168.0.0/24" ]
+  ```
+</ParamField>
+
+---
+
+## `settings` section
+
+Global settings that control port binding, updates, management access, and more.
+
+### Port configuration
+
+<ParamField body="primaryPort" type="integer" default="9993">
+  Override the primary UDP listen port. Overrides both the compiled default (9993) and any command-line port argument.
+</ParamField>
+
+<ParamField body="secondaryPort" type="integer" default="random">
+  Override the secondary listen port. ZeroTier binds a secondary port to assist with NAT traversal. Setting this to a fixed value makes firewall rules easier to maintain.
+</ParamField>
+
+<ParamField body="tertiaryPort" type="integer" default="random">
+  Override the tertiary listen port. Used as an additional NAT traversal aid.
+</ParamField>
+
+<ParamField body="allowSecondaryPort" type="boolean" default="true">
+  Set to `false` to disable the secondary port entirely (also disables the tertiary port). Useful in tightly controlled environments where only one port can be opened.
+</ParamField>
+
+<ParamField body="portMappingEnabled" type="boolean" default="true">
+  When `true`, ZeroTier will attempt to use UPnP or NAT-PMP to automatically map its listen ports on the local gateway router. Disable if your router does not support UPnP, or if you prefer to manage port forwarding manually.
+</ParamField>
+
+### Software updates
+
+<Note>
+  The built-in software update mechanism was removed in version 1.16.0. The `softwareUpdate` and `softwareUpdateChannel` settings are no-ops and have no effect. Use your system's package manager to update ZeroTier.
+</Note>
+
+### Interface filtering
+
+<ParamField body="interfacePrefixBlacklist" type="string[]">
+  An array of interface name prefixes. Any physical network interface whose name starts with one of these strings will be ignored by ZeroTier entirely and not used for sending or receiving traffic.
+
+  ```json
+  "interfacePrefixBlacklist": ["docker", "br-", "virbr", "lo"]
+  ```
+</ParamField>
+
+### Management API access
+
+<ParamField body="allowManagementFrom" type="string[] | null" default="null">
+  By default, the local JSON management API is only accessible from `127.0.0.1`. Set this to an array of CIDR networks to allow management access from additional addresses. Set to `null` to restore the default localhost-only behavior.
+
+  ```json
+  "allowManagementFrom": ["127.0.0.1/8", "10.0.0.0/8"]
+  ```
+</ParamField>
+
+<ParamField body="bind" type="string[]">
+  If present and non-null, ZeroTier will bind only to the IP addresses listed here rather than binding to every interface. Wildcard (`0.0.0.0` or `::`) is accepted.
+
+  ```json
+  "bind": ["203.0.113.5", "0.0.0.0"]
+  ```
+</ParamField>
+
+### Relay and connectivity
+
+<ParamField body="allowTcpFallbackRelay" type="boolean" default="true">
+  Allow ZeroTier to fall back to TCP relay connections when direct UDP paths cannot be established. Disabling this may break connectivity for nodes behind restrictive firewalls that block UDP entirely, but eliminates the latency penalty of TCP relaying.
+
+  <Note>
+    TCP fallback relay is automatically disabled when multipath bonding is active.
+  </Note>
+</ParamField>
+
+### Metrics
+
+<ParamField body="enableMetrics" type="boolean" default="false">
+  Enable Prometheus-format metrics collection. When `true`, metrics are served at `http://127.0.0.1:9993/metrics`. Disabled by default since version 1.16.1. See [Metrics](/configuration/metrics) for full details.
+</ParamField>
+
+### Security and protocol
+
+<ParamField body="encryptedHelloEnabled" type="boolean" default="false">
+  Enables encryption of HELLO packets, which normally contain only public keys and protocol version metadata in plaintext. Enabling this adds a small CPU and bandwidth overhead during peer connection setup. Most deployments do not need this, but it may be required for certain compliance frameworks. Added in version 1.16.0.
+</ParamField>
+
+### Performance
+
+<ParamField body="lowBandwidthMode" type="boolean" default="false">
+  When `true`, ZeroTier reduces the frequency of background protocol traffic (keepalives, path probes, etc.) to conserve bandwidth. Useful for metered mobile connections or satellite links at the cost of slightly slower path detection and failover.
+</ParamField>
+
+<ParamField body="multicoreEnabled" type="boolean" default="false">
+  Enable multithreaded packet I/O. Currently supported on Linux only. Must be set to `true` before `concurrency` has any effect. May significantly improve throughput on multi-core devices where CPU is the bottleneck.
+</ParamField>
+
+<ParamField body="concurrency" type="integer" default="1">
+  Number of I/O threads to use when `multicoreEnabled` is `true`. Values of 1 or ≥ the total number of hardware threads are invalid; ZeroTier will assign a conservative default instead. Added in version 1.14.1.
+</ParamField>
+
+<ParamField body="cpuPinningEnabled" type="boolean" default="false">
+  Pin I/O threads to specific CPU cores for potentially more deterministic latency. Only effective when `multicoreEnabled` is `true`.
+</ParamField>
+
+---
+
+## Complete example
+
+```json
+{
+  "physical": {
+    "10.0.0.0/24": {
+      "blacklist": true
+    },
+    "10.10.10.0/24": {
+      "trustedPathId": 101010024
+    }
+  },
+  "virtual": {
+    "feedbeef12": {
+      "try": [ "10.10.20.1/9993" ],
+      "blacklist": [ "192.168.0.0/24" ]
+    }
+  },
+  "settings": {
+    "primaryPort": 9993,
+    "portMappingEnabled": true,
+    "allowTcpFallbackRelay": true,
+    "softwareUpdate": "disable",
+    "interfacePrefixBlacklist": ["docker", "br-", "virbr"],
+    "allowManagementFrom": ["127.0.0.1/8"],
+    "enableMetrics": false,
+    "encryptedHelloEnabled": false,
+    "lowBandwidthMode": false,
+    "multicoreEnabled": false,
+    "concurrency": 2
+  }
+}
+```
+
+## Verifying your configuration
+
+After editing `local.conf`, check that ZeroTier loaded it successfully:
+
+```bash
+zerotier-cli info -j
+```
+
+The output includes the currently active `settings` object. If there is a JSON parse error, ZeroTier will log an error to stderr and fall back to defaults.
+
+<Tip>
+  ZeroTier reloads `local.conf` automatically every 60 seconds. You do not need to restart the service after editing the file.
+</Tip>

@@ -1,0 +1,178 @@
+---
+title: "Peers"
+description: "List and inspect VL1 peers known to the local ZeroTier node."
+---
+
+The `/peer` endpoints expose the VL1 peer table — the set of ZeroTier nodes that the local node has communicated with recently. Each peer entry includes the physical network paths ZeroTier is using or has tried, latency measurements, and the peer's role in the ZeroTier hierarchy.
+
+<Note>
+  The peer list includes only nodes that this device has exchanged packets with in approximately the last 30 minutes. Nodes on the same network that have not recently communicated directly will not appear until traffic is exchanged.
+</Note>
+
+## GET /peer
+
+Returns an array of peer objects for all known peers.
+
+```bash
+GET http://127.0.0.1:9993/peer
+```
+
+### Example
+
+```bash
+curl -H "X-ZT1-Auth: $(sudo cat /var/lib/zerotier-one/authtoken.secret)" \
+  http://127.0.0.1:9993/peer
+```
+
+### Example response
+
+```json
+[
+  {
+    "address": "62f865ae71",
+    "versionMajor": 1,
+    "versionMinor": 14,
+    "versionRev": 0,
+    "version": "1.14.0",
+    "latency": 12,
+    "role": "LEAF",
+    "paths": [
+      {
+        "address": "203.0.113.45/9993",
+        "lastSend": 1720000100000,
+        "lastReceive": 1720000099000,
+        "active": true,
+        "expired": false,
+        "preferred": true,
+        "trustedPathId": 0
+      }
+    ]
+  },
+  {
+    "address": "deadbeef01",
+    "versionMajor": 1,
+    "versionMinor": 14,
+    "versionRev": 0,
+    "version": "1.14.0",
+    "latency": 2,
+    "role": "PLANET",
+    "paths": [
+      {
+        "address": "195.201.100.99/9993",
+        "lastSend": 1720000095000,
+        "lastReceive": 1720000094000,
+        "active": true,
+        "expired": false,
+        "preferred": true,
+        "trustedPathId": 0
+      }
+    ]
+  }
+]
+```
+
+---
+
+## GET /peer/\<address\>
+
+Returns the peer object for a single peer identified by its 10-digit hexadecimal ZeroTier address.
+
+```bash
+GET http://127.0.0.1:9993/peer/<address>
+```
+
+### Example
+
+```bash
+curl -H "X-ZT1-Auth: $(sudo cat /var/lib/zerotier-one/authtoken.secret)" \
+  http://127.0.0.1:9993/peer/62f865ae71
+```
+
+---
+
+## POST /peer/\<address\>
+
+Updates settings for a specific peer. Accepts a JSON body with writable peer fields.
+
+```bash
+POST http://127.0.0.1:9993/peer/<address>
+```
+
+### Example
+
+```bash
+curl -X POST \
+  -H "X-ZT1-Auth: $(sudo cat /var/lib/zerotier-one/authtoken.secret)" \
+  -H "Content-Type: application/json" \
+  -d '{"role": "UPSTREAM"}' \
+  http://127.0.0.1:9993/peer/62f865ae71
+```
+
+---
+
+## Peer object fields
+
+<ResponseField name="address" type="string">
+  The 10-digit hexadecimal ZeroTier address of the peer. This is derived from the peer's public key and is globally unique on the ZeroTier network.
+</ResponseField>
+
+<ResponseField name="versionMajor" type="integer">
+  Major version of the ZeroTier software running on the remote peer. `-1` if not yet known.
+</ResponseField>
+
+<ResponseField name="versionMinor" type="integer">
+  Minor version of the ZeroTier software running on the remote peer. `-1` if not yet known.
+</ResponseField>
+
+<ResponseField name="versionRev" type="integer">
+  Revision (patch) version of the ZeroTier software running on the remote peer. `-1` if not yet known.
+</ResponseField>
+
+<ResponseField name="version" type="string">
+  Peer's software version as `major.minor.revision`. May be `"-1.-1.-1"` if the version has not yet been exchanged.
+</ResponseField>
+
+<ResponseField name="latency" type="integer">
+  Round-trip latency to this peer in milliseconds, measured over the currently preferred path. `-1` if no latency measurement is available yet.
+</ResponseField>
+
+<ResponseField name="role" type="string">
+  This peer's role in the ZeroTier hierarchy:
+
+  - `LEAF` — a regular end-point device on one or more networks
+  - `UPSTREAM` — a user-defined upstream node configured in `local.conf` (federated root)
+  - `ROOT` — a root server operated by ZeroTier, Inc. (part of the planet definition)
+  - `PLANET` — a planet root — the authoritative root server set for the ZeroTier world
+</ResponseField>
+
+<ResponseField name="paths" type="object[]">
+  Array of physical network paths that ZeroTier has discovered or is using to communicate with this peer. Multiple paths may exist simultaneously (e.g., LAN + WAN). ZeroTier selects the best `preferred` path for active traffic.
+
+  <Expandable title="path object fields">
+    <ResponseField name="address" type="string">
+      Physical socket address of the path in `IP/port` format, e.g. `"203.0.113.45/9993"`. May be IPv4 or IPv6.
+    </ResponseField>
+    <ResponseField name="lastSend" type="integer">
+      Timestamp of the last packet sent over this path, in milliseconds since the Unix epoch. `0` if no packet has been sent yet.
+    </ResponseField>
+    <ResponseField name="lastReceive" type="integer">
+      Timestamp of the last packet received over this path, in milliseconds since the Unix epoch. `0` if no packet has been received yet.
+    </ResponseField>
+    <ResponseField name="active" type="boolean">
+      `true` if this path is currently considered active (has exchanged packets recently). An inactive path may be kept in the list for a period while ZeroTier attempts to re-establish it.
+    </ResponseField>
+    <ResponseField name="expired" type="boolean">
+      `true` if this path has passed its expiry threshold and is no longer being used. Expired paths are pruned from the list after a short period.
+    </ResponseField>
+    <ResponseField name="preferred" type="boolean">
+      `true` if this is the currently preferred path for sending traffic to this peer. Only one path per peer is preferred at a time. ZeroTier prefers direct paths over relayed paths and lower-latency paths over higher-latency ones.
+    </ResponseField>
+    <ResponseField name="trustedPathId" type="integer">
+      If non-zero, this path is a trusted path as configured in `local.conf`. Traffic over a trusted path bypasses ZeroTier's encryption and authentication for performance. `0` means normal encrypted operation.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<Tip>
+  Peers with `role: PLANET` are ZeroTier's root servers. They facilitate peer discovery and relay traffic when direct connections cannot be established. You should always see at least one planet peer with `active: true` when `online` is `true` in `/status`.
+</Tip>

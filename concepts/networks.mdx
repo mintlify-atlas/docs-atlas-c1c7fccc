@@ -1,0 +1,225 @@
+---
+title: "Networks"
+description: "Virtual networks in ZeroTier — network IDs, membership, IP assignment, and access control."
+---
+
+A ZeroTier virtual network is a software-defined Ethernet segment. Members of the same network can communicate as if they were plugged into the same physical switch, regardless of where they are on the internet. This page explains how networks are identified, how membership is controlled, and how traffic is managed.
+
+## Network IDs
+
+Every ZeroTier network has a **16-digit hexadecimal network ID** (e.g. `8056c2e21c000001`). This is a 64-bit integer with a specific structure:
+
+```
+8056c2e21c  000001
+^^^^^^^^^^  ^^^^^^
+Controller  Unique
+ Address    Suffix
+```
+
+The most significant 40 bits (first 10 hex digits) are the **ZeroTier address of the network controller** — the node responsible for authorizing members and issuing network configurations. The lower 24 bits are an arbitrary suffix chosen by the controller to distinguish networks it manages.
+
+This encoding is implemented directly in `Network::controllerFor()` (`node/Network.hpp:58`):
+
+```cpp
+static inline Address controllerFor(uint64_t nwid)
+{
+    return Address(nwid >> 24);
+}
+```
+
+When a node joins a network, it extracts the controller address from the network ID and contacts that node directly to request a configuration — no central lookup service is required.
+
+<Note>
+  If you operate your own network controller, all networks you create will have your ZeroTier address as the first 10 digits of their network ID. This is how nodes know which controller to contact.
+</Note>
+
+---
+
+## Public vs. Private Networks
+
+ZeroTier supports two network types, defined in `ZT_VirtualNetworkType` (`include/ZeroTierOne.h:678`):
+
+<Tabs>
+  <Tab title="Private Networks">
+    Private networks enforce access control via **Certificates of Membership (COMs)**. Every node that wants to communicate on a private network must present a valid, controller-signed COM to its peers. Nodes without a valid COM are silently dropped by `Network::gate()` (`node/Network.hpp:280`).
+
+    Private networks are the default and the recommended choice for any production deployment.
+  </Tab>
+  <Tab title="Public Networks">
+    Public networks have no access control. Any node that knows the network ID can join and communicate without needing controller authorization. The source code comments this directly (`include/ZeroTierOne.h:685`):
+
+    > "Public networks have no access control — they'll always be AUTHORIZED"
+
+    Public networks are useful for open experimentation or testing, but should never be used for sensitive data.
+  </Tab>
+</Tabs>
+
+---
+
+## Membership and Authorization
+
+Joining a network is a three-step process:
+
+<Steps>
+  <Step title="Request configuration">
+    When a node calls `zerotier-cli join <nwid>` (or the API equivalent), it contacts the controller at the address embedded in the network ID and sends a `NETWORK_CONFIG_REQUEST` packet. The request includes metadata: protocol version, OS/arch, maximum rules, capabilities, and tags the node supports (`node/NetworkConfig.hpp:95-121`).
+  </Step>
+  <Step title="Controller decision">
+    The controller checks whether the requesting node is authorized. On a private network, if the node is not on the allow-list, the controller responds with `ACCESS_DENIED` and the node's status becomes `ZT_NETWORK_STATUS_ACCESS_DENIED`. If approved, the controller generates and signs a `NetworkConfig` for that specific member and sends it back.
+  </Step>
+  <Step title="Configuration applied">
+    The node calls `Network::setConfiguration()` which validates the signed config, stores it, and configures the virtual network interface. The COM embedded in the config is then presented to every other member the node wants to talk to.
+  </Step>
+</Steps>
+
+### Certificates of Membership
+
+The **Certificate of Membership (COM)** is the credential that proves a node is authorized on a private network. Implemented in `node/CertificateOfMembership.hpp`, a COM is a sorted set of tuples `(id, value, maxDelta)` signed by the controller.
+
+The most important qualifier is the **timestamp**. Each COM carries a timestamp and a maximum allowed timestamp delta. When two peers want to communicate, they exchange COMs and call `CertificateOfMembership::agreesWith()`. Two COMs agree if their timestamps are within `maxDelta` of each other. This means:
+
+- COMs have an effective expiry (configured via `ZT_NETWORKCONFIG_DEFAULT_CREDENTIAL_TIME_DFL_MAX_DELTA`, default 30 minutes)
+- Nodes must periodically re-fetch fresh COMs from the controller to remain in good standing
+- A node that loses connectivity to the controller will eventually fail COM checks with its peers
+
+The default and maximum delta values from `node/NetworkConfig.hpp`:
+
+```cpp
+// Default max delta: 30 minutes
+#define ZT_NETWORKCONFIG_DEFAULT_CREDENTIAL_TIME_DFL_MAX_DELTA ((int64_t)(1000 * 60 * 30))
+
+// Maximum max delta: 2 hours
+#define ZT_NETWORKCONFIG_DEFAULT_CREDENTIAL_TIME_MAX_MAX_DELTA ((int64_t)(1000 * 60 * 60 * 2))
+
+// Minimum max delta: 5 minutes
+#define ZT_NETWORKCONFIG_DEFAULT_CREDENTIAL_TIME_MIN_MAX_DELTA ((int64_t)(1000 * 60 * 5))
+```
+
+### Other Credentials
+
+In addition to COMs, the controller can issue:
+
+<AccordionGroup>
+  <Accordion title="Capabilities">
+    A **Capability** grants additional rule-set permissions to specific members. Up to `ZT_MAX_NETWORK_CAPABILITIES` (128) capabilities can be issued per network, with up to `ZT_MAX_CAPABILITY_RULES` (64) rules each. Capabilities allow per-member elevated permissions without modifying the base network rules.
+  </Accordion>
+  <Accordion title="Tags">
+    **Tags** are key-value pairs associated with a member. Up to `ZT_MAX_NETWORK_TAGS` (128) tags per member. Flow rules in the network config can `MATCH_TAG_DIFFERENCE`, `MATCH_TAG_BITWISE_AND`, etc. to segment traffic between members with different tag values — enabling micro-segmentation without per-member rule sets.
+  </Accordion>
+  <Accordion title="Certificates of Ownership">
+    **Certificates of Ownership (COOs)** allow a controller to assert that a specific member owns a particular IP or MAC address. The rules engine can then enforce `ZT_RULE_PACKET_CHARACTERISTICS_SENDER_IP_AUTHENTICATED` to block spoofed source addresses.
+  </Accordion>
+  <Accordion title="Revocations">
+    The controller can issue a **Revocation** to invalidate a previously issued credential before it expires. Revocations propagate peer-to-peer via `ncSendRevocation()` so they spread across the network without requiring every node to contact the controller.
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## IP Address Assignment
+
+ZeroTier networks can assign IP addresses to members in two ways:
+
+<CardGroup cols={2}>
+  <Card title="Controller-Assigned (ZT-Managed)" icon="circle-dot">
+    The controller assigns up to `ZT_MAX_ZT_ASSIGNED_ADDRESSES` (32) static IP addresses per member. These appear in `NetworkConfig::staticIps[]` and are configured on the virtual interface automatically. No DHCP is required.
+  </Card>
+  <Card title="Self-Assigned" icon="pen">
+    Members can assign additional IPs to the ZeroTier interface manually. Self-assigned IPs that are not covered by a Certificate of Ownership can still be used, but the rules engine will not mark their packets as `SENDER_IP_AUTHENTICATED`.
+  </Card>
+</CardGroup>
+
+---
+
+## Route Management
+
+The controller can push up to `ZT_MAX_NETWORK_ROUTES` (128) routes to network members (`NetworkConfig::routes[]`). These are installed in the host OS routing table. Four flags control how these routes are applied:
+
+| Flag | Meaning |
+|------|---------|
+| `allowManaged` | Accept routes to private/RFC1918 address ranges pushed by the controller. Enabled by default. |
+| `allowGlobal` | Accept routes to public internet address ranges. Disabled by default. Needed for site-to-site VPN use cases. |
+| `allowDefault` | Accept a `0.0.0.0/0` or `::/0` default route — i.e. route all internet traffic through ZeroTier. Disabled by default. |
+| `allowDNS` | Accept DNS server configuration pushed by the controller. Disabled by default. |
+
+<Warning>
+  Enabling `allowDefault` on a network you do not control routes all your internet traffic through that network. Only enable it on networks you fully trust and operate.
+</Warning>
+
+---
+
+## Flow Rules and Micro-Segmentation
+
+The VL2 rules engine is one of ZeroTier's most powerful features. It allows network administrators to apply SDN-style packet filtering rules to every frame on the virtual network.
+
+### Rule Structure
+
+Rules in `NetworkConfig::rules[]` are evaluated as a sequence of MATCH/ACTION pairs. Matches are ANDed together until an ACTION is reached. The rules engine supports:
+
+<AccordionGroup>
+  <Accordion title="Match conditions">
+    - Source/destination ZeroTier address or MAC address
+    - Source/destination IP address or CIDR range
+    - IP protocol (TCP, UDP, ICMP, etc.)
+    - TCP flags (SYN, ACK, FIN, RST, etc.)
+    - EtherType
+    - VLAN ID
+    - Tag values (exact, bitwise, range comparisons)
+    - Packet characteristics (inbound/outbound, multicast, broadcast)
+    - Certificate of ownership authentication flags
+  </Accordion>
+  <Accordion title="Action types">
+    - `ACTION_ACCEPT` — allow the frame
+    - `ACTION_DROP` — silently discard the frame
+    - `ACTION_REDIRECT` — redirect to a different ZeroTier address
+    - `ACTION_TEE` — send a copy to a monitoring address while also accepting
+    - `ACTION_BREAK` — stop evaluating the capability rule set, fall through to base rules
+  </Accordion>
+</AccordionGroup>
+
+### Network Limits
+
+| Resource | Maximum |
+|----------|---------|
+| Base network rules | 1,024 (`ZT_MAX_NETWORK_RULES`) |
+| Capabilities per network | 128 (`ZT_MAX_NETWORK_CAPABILITIES`) |
+| Rules per capability | 64 (`ZT_MAX_CAPABILITY_RULES`) |
+| Tags per member | 128 (`ZT_MAX_NETWORK_TAGS`) |
+| Certificates of ownership | 4 (`ZT_MAX_CERTIFICATES_OF_OWNERSHIP`) |
+| Pushed routes | 128 (`ZT_MAX_NETWORK_ROUTES`) |
+| ZT-assigned IPs per member | 32 (`ZT_MAX_ZT_ASSIGNED_ADDRESSES`) |
+| Specialists (bridges, relays) | 256 (`ZT_MAX_NETWORK_SPECIALISTS`) |
+| Multicast subscriptions per interface | 4,096 (`ZT_MAX_NETWORK_MULTICAST_SUBSCRIPTIONS`) |
+
+### Micro-Segmentation with Tags
+
+Tags enable micro-segmentation without per-member rule sets. For example, to isolate "production" from "staging" nodes:
+
+1. Define tag ID `1000` in your network (via the controller API)
+2. Assign tag value `100` to production members and `200` to staging members
+3. Add a base rule: `if TAG_DIFFERENCE(1000) != 0 then DROP`
+
+This single rule prevents any cross-segment communication regardless of network size, using only the tag value carried in each member's NetworkConfig.
+
+---
+
+## Specialist Nodes
+
+The `NetworkConfig::specialists[]` array (`node/NetworkConfig.hpp:555`) records nodes with elevated network roles. Each entry encodes a ZeroTier address in the low 40 bits and role flags in the high 24 bits:
+
+| Role | Flag | Description |
+|------|------|-------------|
+| Active Bridge | `ZT_NETWORKCONFIG_SPECIALIST_TYPE_ACTIVE_BRIDGE` | Bridges ZeroTier to physical Ethernet; receives unknown-destination multicasts |
+| Multicast Replicator | `ZT_NETWORKCONFIG_SPECIALIST_TYPE_MULTICAST_REPLICATOR` | Handles multicast distribution in place of sender-side replication |
+| Network Relay | `ZT_NETWORKCONFIG_SPECIALIST_TYPE_NETWORK_RELAY` | Per-network relay node for members that cannot peer directly |
+
+---
+
+## Scalability Considerations
+
+ZeroTier networks are designed for thousands of members. Key scalability properties:
+
+- **Controller load**: The controller only handles config requests and COM renewals. It is not in the data path. A single controller can serve many large networks.
+- **Multicast limits**: The `multicastLimit` field in NetworkConfig caps the number of recipients per multicast frame. Large networks should tune this to avoid broadcast storms.
+- **COM refresh**: Members contact the controller roughly every 30 minutes. Design your controller infrastructure for availability, not throughput.
+- **Rule evaluation**: Rules are evaluated locally by every node for every frame. Deep rule sets add CPU overhead. Keep base rules lean; use capabilities for per-member exceptions.

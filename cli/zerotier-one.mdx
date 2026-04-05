@@ -1,0 +1,159 @@
+---
+title: "zerotier-one"
+description: "The ZeroTier One service daemon — command line reference."
+---
+
+`zerotier-one` is the system service that connects a Linux, macOS, or BSD host to one or more ZeroTier virtual networks and presents those networks as virtual network interfaces. You can think of it as a peer-to-peer VPN client that manages its own cryptographic identity and speaks directly to other ZeroTier nodes across the internet.
+
+The service exposes a local JSON API at `127.0.0.1:<port>` (default port `9993`) that `zerotier-cli` and other tools use to control it.
+
+## Synopsis
+
+```bash
+zerotier-one [-switches] [working directory]
+```
+
+## Switches
+
+<AccordionGroup>
+  <Accordion title="-h — display help">
+    Print a brief usage summary and exit.
+  </Accordion>
+  <Accordion title="-v — display version">
+    Print the ZeroTier One version string and exit.
+  </Accordion>
+  <Accordion title="-U — unprivileged mode">
+    Skip the privilege check and allow the service to run as a non-root user. This is intended for cases where `zerotier-one` is acting solely as a network controller microservice and will never actually join networks — joining networks requires the ability to create and configure virtual network interfaces, which requires elevated privileges.
+  </Accordion>
+  <Accordion title="-p<port> — set primary port">
+    Listen on `<port>` instead of the default `9993`. The JSON API will also be available at this port. Pass `0` to let the OS assign a random port on each start.
+  </Accordion>
+  <Accordion title="-d — daemonize">
+    Fork into the background and run as a daemon. On most distributions, the init system (systemd, launchd, etc.) handles daemonization automatically; use this flag only when starting the service manually.
+  </Accordion>
+  <Accordion title="-i — zerotier-idtool personality">
+    Invoke the `zerotier-idtool` sub-command personality. The binary behaves exactly like `zerotier-idtool`. This also happens automatically when the binary (or a symlink to it) is named `zerotier-idtool`.
+  </Accordion>
+  <Accordion title="-q — zerotier-cli personality">
+    Invoke the `zerotier-cli` sub-command personality. The binary behaves exactly like `zerotier-cli`. This also happens automatically when the binary (or a symlink to it) is named `zerotier-cli`.
+  </Accordion>
+</AccordionGroup>
+
+## Working directory
+
+The working directory is where `zerotier-one` stores its identity, network configurations, and runtime state. It must persist across reboots — do not store it in a tmpfs or a location that system cleanup tools might purge. **Loss of `identity.secret` permanently loses your ZeroTier address.**
+
+If you do not pass a working directory path on the command line, the service uses a platform-specific default:
+
+<Tabs>
+  <Tab title="Linux">
+    ```
+    /var/lib/zerotier-one
+    ```
+  </Tab>
+  <Tab title="macOS">
+    ```
+    /Library/Application Support/ZeroTier/One
+    ```
+  </Tab>
+  <Tab title="FreeBSD / OpenBSD">
+    ```
+    /var/db/zerotier-one
+    ```
+  </Tab>
+  <Tab title="Windows">
+    ```
+    \ProgramData\ZeroTier\One
+    ```
+    The base path may differ if Windows is installed on a non-standard drive.
+  </Tab>
+</Tabs>
+
+## Working directory files
+
+<AccordionGroup>
+  <Accordion title="identity.secret">
+    Your complete ZeroTier identity: the 10-digit hex address and its ECC-256 private key. This file **is** your node on the network. Back it up. Guard it carefully — anyone who obtains the private key can impersonate your device and decrypt its traffic. For network controllers, this file is also the private key for a certificate authority covering all of that controller's networks.
+  </Accordion>
+  <Accordion title="identity.public">
+    The public portion of your identity: address and public key only. Safe to share.
+  </Accordion>
+  <Accordion title="authtoken.secret">
+    The bearer token required to authenticate HTTP requests to the local JSON API. Send it in the `X-ZT1-Auth` request header. If this file does not exist when the service starts, it is generated from a secure random source. Copy this file to `~/.zeroTierOneAuthToken` (mode `0600`) to allow an unprivileged user to run `zerotier-cli` without `sudo`.
+  </Accordion>
+  <Accordion title="zerotier-one.port">
+    The primary port the service is listening on, written at startup. `zerotier-cli` reads this file to locate the API.
+  </Accordion>
+  <Accordion title="zerotier-one.pid">
+    The process ID of the running daemon. Deleted on clean shutdown.
+  </Accordion>
+  <Accordion title="devicemap">
+    Maps `ztNNNNNN` interface numbers to ZeroTier network IDs so the same interface name is reused for the same network across restarts. Absent on platforms (such as FreeBSD) that can encode the network ID in the interface name directly.
+  </Accordion>
+  <Accordion title="networks.d/ directory">
+    Caches network configurations and membership certificates. The service scans this directory at startup: any file named `<network-id>.conf` causes the service to re-join that network, even if it is empty. You can pre-configure a network join by touching an empty file here before the service starts.
+
+    ```bash
+    # Pre-configure a network join before starting the service
+    sudo touch /var/lib/zerotier-one/networks.d/8056c2e21c000001.conf
+    ```
+  </Accordion>
+  <Accordion title="iddb.d/ directory">
+    Caches the public identity of every peer the node has communicated with in the past 60 days. Deleting this directory is safe but will slow down reconnection to known peers until their identities are re-fetched.
+  </Accordion>
+  <Accordion title="controller.db / controller.db.backup">
+    Present only when the service is built with the embedded network controller. `controller.db` is the controller's SQLite3 database. `controller.db.backup` is a rolling backup written every five minutes when changes have occurred — it is safe to copy this file without risking SQLite corruption.
+  </Accordion>
+</AccordionGroup>
+
+## The JSON API
+
+The service listens for HTTP requests at `127.0.0.1:<port>`. Every request must include the auth token in the `X-ZT1-Auth` header:
+
+```bash
+curl -s -H "X-ZT1-Auth: $(sudo cat /var/lib/zerotier-one/authtoken.secret)" \
+  http://127.0.0.1:9993/status
+```
+
+<Note>
+  The API also binds to `0.0.0.0:<port>`, but requests from non-loopback addresses are rejected unless `allowManagementFrom` is configured in `local.conf`.
+</Note>
+
+See the [Service API reference](/api/overview) for the full endpoint list.
+
+## Identity generation
+
+The first time `zerotier-one` starts in an empty working directory it generates a new identity. This involves a proof-of-work computation that makes address generation computationally expensive — an anti-spoofing measure. On most modern hardware this takes a few seconds; on slower embedded systems it can take a minute or more. The result is written to `identity.secret` and reused on every subsequent start.
+
+## Examples
+
+<CodeGroup>
+
+```bash Start as a daemon (typical)
+sudo zerotier-one -d
+```
+
+```bash Run in the foreground (debugging)
+sudo zerotier-one /var/lib/zerotier-one
+```
+
+```bash Run a second instance on a different port
+sudo zerotier-one -d -p12345 /tmp/zt-test-instance
+```
+
+</CodeGroup>
+
+## Running multiple instances
+
+A single `zerotier-one` instance can join any number of networks, so running multiple instances on one host is rarely necessary. If you do need it — for example, to test a network controller in isolation — each instance must have its own working directory and its own primary port:
+
+```bash
+sudo zerotier-one -d -p9993 /var/lib/zerotier-one
+sudo zerotier-one -d -p9994 /var/lib/zerotier-one-test
+```
+
+## See also
+
+- [`zerotier-cli`](/cli/zerotier-cli) — control the running service from the command line
+- [`zerotier-idtool`](/cli/zerotier-idtool) — create and inspect ZeroTier identities offline
+- [Service API reference](/api/overview) — full JSON API documentation

@@ -1,0 +1,116 @@
+{
+  "projectType": "infrastructure",
+  "projectName": "ZeroTier",
+  "projectDescription": "A smart programmable Ethernet switch for the planet that connects devices, VMs, and containers into secure peer-to-peer virtual networks from anywhere.",
+  "theme": "aspen",
+  "primaryColor": "#fab354",
+  "lightColor": "#845424",
+  "darkColor": "#202020",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "installation"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/architecture",
+              "concepts/identities",
+              "concepts/networks",
+              "concepts/security"
+            ]
+          },
+          {
+            "group": "Configuration",
+            "pages": [
+              "configuration/local-conf",
+              "configuration/multipath-bonding",
+              "configuration/metrics"
+            ]
+          },
+          {
+            "group": "CLI Reference",
+            "pages": [
+              "cli/zerotier-one",
+              "cli/zerotier-cli",
+              "cli/zerotier-idtool"
+            ]
+          },
+          {
+            "group": "Deployment",
+            "pages": [
+              "deployment/docker",
+              "deployment/self-hosted-controller",
+              "deployment/building-from-source"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Service API",
+            "pages": [
+              "api/overview",
+              "api/status",
+              "api/networks",
+              "api/peers"
+            ]
+          },
+          {
+            "group": "Controller API",
+            "pages": [
+              "api/controller-overview",
+              "api/controller-networks",
+              "api/controller-members"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Peer-to-peer virtual Ethernet networking across any network topology",
+    "End-to-end encryption with user-controlled secret keys",
+    "Software-defined networking with fine-grained access control rules (VL2)",
+    "Multipath bonding with multiple policies (active-backup, balance-rr, balance-aware)",
+    "Self-hosted network controller for full infrastructure ownership",
+    "Cross-platform support: Linux, macOS, Windows, FreeBSD, OpenBSD",
+    "Local JSON API for programmatic control of the node service",
+    "Prometheus metrics endpoint for observability"
+  ],
+  "publicApiSurface": [
+    "GET /status — Node status and addressing info",
+    "GET /network — List all joined networks",
+    "POST /network/<id> — Join a network",
+    "DELETE /network/<id> — Leave a network",
+    "GET /peer — List all peers",
+    "GET /peer/<address> — Get peer info",
+    "GET /controller/network — List controller networks",
+    "POST /controller/network/<id> — Create/update a network",
+    "GET /controller/network/<id>/member — List network members",
+    "POST /controller/network/<id>/member/<address> — Authorize/configure a member",
+    "ZT_Node_new() — C API: create a ZeroTier node instance",
+    "ZT_Node_processWirePacket() — C API: process incoming wire packet",
+    "ZT_Node_processVirtualNetworkFrame() — C API: inject a virtual network frame",
+    "ZT_Node_join() — C API: join a network",
+    "ZT_Node_leave() — C API: leave a network",
+    "zerotier-cli join <network-id>",
+    "zerotier-cli leave <network-id>",
+    "zerotier-cli listnetworks",
+    "zerotier-cli listpeers",
+    "zerotier-cli info",
+    "zerotier-idtool generate",
+    "zerotier-idtool validate",
+    "zerotier-idtool sign / verify"
+  ]
+}

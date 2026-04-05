@@ -1,0 +1,253 @@
+---
+title: "Metrics"
+description: "Enable Prometheus metrics for monitoring ZeroTier node and controller health."
+---
+
+ZeroTier exposes a Prometheus-compatible metrics endpoint that you can scrape to monitor node health, packet traffic, network membership, peer connectivity, and controller state.
+
+<Note>
+  Metrics collection is **disabled by default** as of version 1.16.1. You must explicitly enable it in `local.conf`.
+</Note>
+
+## Enabling metrics
+
+Add `enableMetrics: true` to the `settings` section of your [`local.conf`](/configuration/local-conf):
+
+```json
+{
+  "settings": {
+    "enableMetrics": true
+  }
+}
+```
+
+ZeroTier reloads `local.conf` automatically every 60 seconds, so no service restart is needed after making this change.
+
+## The metrics endpoint
+
+Once enabled, metrics are served in Prometheus text format at:
+
+```
+http://127.0.0.1:9993/metrics
+```
+
+The endpoint is authenticated the same way as the rest of the ZeroTier management API — pass the contents of `authtoken.secret` as either the `X-ZT1-Auth` HTTP header or the `?auth=` query parameter:
+
+```bash
+curl -s http://127.0.0.1:9993/metrics \
+  -H "X-ZT1-Auth: $(cat /var/lib/zerotier-one/authtoken.secret)"
+```
+
+---
+
+## Node metrics
+
+### Packet type counters
+
+The `zt_packet` family tracks every ZeroTier protocol verb, broken out by direction (`rx` for incoming, `tx` for outgoing). Labels: `packet_type`, `direction`.
+
+| Packet type | Description |
+|-------------|-------------|
+| `hello` | Peer greeting / path establishment |
+| `ack` | Throughput acknowledgement (used by bonding) |
+| `qos` | QoS measurement (used by bonding) |
+| `frame` / `ext_frame` | Ethernet frame delivery |
+| `whois` | Identity lookup |
+| `rendezvous` | NAT traversal assist from root |
+| `echo` | Keepalive / path probe |
+| `multicast_like` | Multicast group membership advertisement |
+| `multicast_gather` / `multicast_frame` | Multicast delivery |
+| `network_config_request` / `network_config` | Network configuration negotiation |
+| `network_credentials` | Certificate / credential delivery |
+| `push_direct_paths` | Direct path advertisement |
+| `path_negotiation_request` | Bonding path negotiation |
+| `user_message` | Application-layer user messages |
+| `remote_trace` | Remote diagnostic tracing |
+| `error` | Protocol error packets |
+| `nop` | No-operation |
+| `ok` | Generic acknowledgement |
+
+Example output:
+
+```
+zt_packet{packet_type="frame",direction="rx"} 142837
+zt_packet{packet_type="frame",direction="tx"} 98421
+zt_packet{packet_type="hello",direction="rx"} 512
+zt_packet{packet_type="hello",direction="tx"} 507
+```
+
+### Packet error counters
+
+The `zt_packet_error` family counts protocol-level errors by type and direction. Labels: `error_type`, `direction`.
+
+| Error type | Description |
+|------------|-------------|
+| `obj_not_found` | Referenced object (network, member, etc.) does not exist |
+| `unsupported_operation` | Verb or operation not supported by this node |
+| `identity_collision` | ZeroTier address collision detected |
+| `need_membership_certificate` | Peer must present a membership certificate |
+| `network_access_denied` | Access to a network was denied |
+| `unwanted_multicast` | Unsolicited multicast received |
+| `authentication_required` | Peer must authenticate (e.g. SSO) |
+| `internal_server_error` | Internal controller error |
+
+### Data transfer counters
+
+The `zt_data` family tracks raw bytes sent and received, split by transport protocol. Labels: `protocol`, `direction`.
+
+```
+zt_data{protocol="udp",direction="rx"} 8473920
+zt_data{protocol="udp",direction="tx"} 7214880
+zt_data{protocol="tcp",direction="rx"} 12400
+zt_data{protocol="tcp",direction="tx"} 9800
+```
+
+### Network gauges and counters
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `zt_num_networks` | Gauge | Number of ZeroTier networks this node has joined |
+| `zt_network_multicast_groups_subscribed` | Gauge | Multicast groups subscribed to, per network (label: `network_id`) |
+| `zt_network_packets` | Counter | Packets per network, by direction (labels: `network_id`, `direction`) |
+
+### Peer metrics
+
+Peer metrics require that the binary was built **without** the `ZT_NO_PEER_METRICS` compile flag (the default for official builds).
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `zt_peer_latency` | Histogram | Round-trip latency to each peer in milliseconds (label: `node_id`) |
+| `zt_peer_path_count` | Gauge | Number of known physical paths to each peer (label: `node_id`) |
+| `zt_peer_packets` | Counter | Packets to/from each peer, by direction (labels: `node_id`, `direction`) |
+| `zt_peer_packet_errors` | Counter | Incoming packet errors per peer (label: `node_id`) |
+
+---
+
+## Controller metrics
+
+If you are running a self-hosted ZeroTier network controller (built with `ZT_NONFREE=1`), the following additional metrics are available on the same `/metrics` endpoint.
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `controller_network_count` | Gauge | Number of networks the controller is currently serving |
+| `controller_member_count` | Gauge | Number of network members across all networks |
+| `controller_network_change_count` | Counter | Cumulative network configuration changes |
+| `controller_member_change_count` | Counter | Cumulative member configuration changes |
+| `controller_member_auth_count` | Counter | Total member authorization events |
+| `controller_member_deauth_count` | Counter | Total member deauthorization events |
+| `controller_network_config_request` | Counter | Total network configuration requests handled |
+| `controller_network_config_request_queue` | Gauge | Current depth of the config request queue |
+| `controller_network_config_request_threads` | Gauge | Active config-handling threads |
+| `controller_sso_expiration_checks` | Counter | SSO token expiration checks performed |
+| `controller_sso_timeouts` | Counter | Members deauthorized due to SSO timeout |
+
+### Database operation counters
+
+These counters track individual database operations performed by the controller and are useful for identifying load hotspots:
+
+| Metric | Description |
+|--------|-------------|
+| `controller_db_get_network` | Network record lookups |
+| `controller_db_get_network_and_member` | Combined network+member lookups |
+| `controller_db_get_networK_and_member_summary` | Network+member+summary lookups |
+| `controller_db_get_member_list` | Member list queries |
+| `controller_db_get_network_list` | Network list queries |
+| `controller_db_member_change` | Member record writes |
+| `controller_db_network_change` | Network record writes |
+
+---
+
+## Prometheus scrape configuration
+
+Add a scrape job to your `prometheus.yml`. Because the endpoint requires authentication, use `authorization` or pass the token via `params`:
+
+<CodeGroup>
+```yaml Bearer header (recommended)
+scrape_configs:
+  - job_name: "zerotier"
+    static_configs:
+      - targets: ["127.0.0.1:9993"]
+    authorization:
+      type: "Bearer"
+      credentials_file: "/var/lib/zerotier-one/authtoken.secret"
+    metrics_path: "/metrics"
+    scrape_interval: 15s
+```
+
+```yaml URL parameter
+scrape_configs:
+  - job_name: "zerotier"
+    static_configs:
+      - targets: ["127.0.0.1:9993"]
+    metrics_path: "/metrics"
+    params:
+      auth: ["<paste-token-here>"]
+    scrape_interval: 15s
+```
+</CodeGroup>
+
+<Warning>
+  Avoid embedding the auth token directly in `prometheus.yml` — use `credentials_file` or a secrets manager so the token is not stored in plaintext in your configuration repository.
+</Warning>
+
+---
+
+## Using with Grafana
+
+<Steps>
+  <Step title="Add Prometheus as a data source">
+    In Grafana, go to **Connections → Data Sources → Add data source** and select **Prometheus**. Set the URL to your Prometheus server (e.g. `http://localhost:9090`).
+  </Step>
+
+  <Step title="Import or build a dashboard">
+    Create a new dashboard and add panels using the ZeroTier metrics. Some useful starting queries:
+
+    ```promql
+    # Packet receive rate per type
+    rate(zt_packet{direction="rx"}[5m])
+
+    # Total bytes received over UDP in the last minute
+    rate(zt_data{protocol="udp",direction="rx"}[1m])
+
+    # Number of joined networks
+    zt_num_networks
+
+    # Peer latency 95th percentile
+    histogram_quantile(0.95, rate(zt_peer_latency_bucket[5m]))
+
+    # Controller network count over time
+    controller_network_count
+
+    # Member auth rate
+    rate(controller_member_auth_count[5m])
+    ```
+  </Step>
+
+  <Step title="Set up alerting">
+    Use Grafana alerting or Prometheus alerting rules to notify on conditions such as:
+
+    ```yaml
+    # Alert if peer error rate is elevated
+    - alert: ZeroTierPeerErrors
+      expr: rate(zt_peer_packet_errors[5m]) > 0.01
+      for: 2m
+      labels:
+        severity: warning
+      annotations:
+        summary: "Elevated ZeroTier peer packet error rate"
+
+    # Alert if no packets are being received (node may be offline)
+    - alert: ZeroTierNoTraffic
+      expr: rate(zt_data{direction="rx"}[5m]) == 0
+      for: 5m
+      labels:
+        severity: critical
+      annotations:
+        summary: "ZeroTier node receiving no traffic"
+    ```
+  </Step>
+</Steps>
+
+<Tip>
+  The ZeroTier community maintains example Grafana dashboard JSON on GitHub. Search for "ZeroTier Grafana dashboard" to find community-contributed starting points you can import directly into your Grafana instance.
+</Tip>

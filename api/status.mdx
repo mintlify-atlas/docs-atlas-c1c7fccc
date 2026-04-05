@@ -1,0 +1,104 @@
+---
+title: "GET /status"
+description: "Get the running node status, ZeroTier address, and version information."
+---
+
+Returns a JSON object describing the current state of the local ZeroTier One node, including its ZeroTier address, software version, and whether it has connectivity to the ZeroTier network.
+
+## Request
+
+```bash
+GET http://127.0.0.1:9993/status
+```
+
+**Authentication required.** Pass the token from `authtoken.secret` in the `X-ZT1-Auth` header.
+
+<ParamField header="X-ZT1-Auth" type="string" required>
+  Contents of `authtoken.secret`. See [Authentication](/api/overview#authentication).
+</ParamField>
+
+### Example
+
+```bash
+curl -H "X-ZT1-Auth: $(sudo cat /var/lib/zerotier-one/authtoken.secret)" \
+  http://127.0.0.1:9993/status
+```
+
+## Response
+
+Returns a single JSON object. All fields are read-only.
+
+<ResponseField name="address" type="string">
+  The 10-digit hexadecimal ZeroTier address of this node. This is derived from the node's public key and is globally unique. Example: `"deadbeef12"`.
+</ResponseField>
+
+<ResponseField name="publicIdentity" type="string">
+  The full contents of this node's `identity.public` file — the address and associated ECC-256 public key. You can share this string safely; it contains no secret material.
+</ResponseField>
+
+<ResponseField name="worldId" type="integer">
+  The ZeroTier world ID. This identifies the root server set (planet) the node is operating within. For the public ZeroTier network this value is constant and never changes except in test environments.
+</ResponseField>
+
+<ResponseField name="worldTimestamp" type="integer">
+  Unix timestamp (milliseconds) of the most recently received world definition. Increases when ZeroTier, Inc. updates the planet definition.
+</ResponseField>
+
+<ResponseField name="online" type="boolean">
+  `true` if the node has successfully reached at least one upstream peer (root or planet). A node that is `false` here cannot route traffic to other ZeroTier nodes.
+</ResponseField>
+
+<ResponseField name="tcpFallbackActive" type="boolean">
+  `true` if the node is currently using the TCP fallback relay. TCP relay is significantly slower than direct UDP paths. If this is `true` persistently, investigate firewall rules blocking UDP port 9993.
+</ResponseField>
+
+<ResponseField name="relayPolicy" type="string">
+  Controls when this node will relay traffic on behalf of other peers. One of:
+
+  - `ALWAYS` — relay for any peer
+  - `TRUSTED` — relay only for peers on shared networks
+  - `NEVER` — never relay
+</ResponseField>
+
+<ResponseField name="versionMajor" type="integer">
+  Major version number of the running ZeroTier One software.
+</ResponseField>
+
+<ResponseField name="versionMinor" type="integer">
+  Minor version number of the running ZeroTier One software.
+</ResponseField>
+
+<ResponseField name="versionRev" type="integer">
+  Revision (patch) number of the running ZeroTier One software.
+</ResponseField>
+
+<ResponseField name="version" type="string">
+  Software version as a human-readable string in `major.minor.revision` format. Example: `"1.14.0"`.
+</ResponseField>
+
+<ResponseField name="clock" type="integer">
+  The current system clock of the node, expressed as milliseconds since the Unix epoch. Useful for detecting clock skew between the node and the client making the API call.
+</ResponseField>
+
+### Example response
+
+```json
+{
+  "address": "deadbeef12",
+  "publicIdentity": "deadbeef12:0:abc123...publickeybytes...",
+  "worldId": 149604618,
+  "worldTimestamp": 1567191339823,
+  "online": true,
+  "tcpFallbackActive": false,
+  "relayPolicy": "NEVER",
+  "versionMajor": 1,
+  "versionMinor": 14,
+  "versionRev": 0,
+  "version": "1.14.0",
+  "clock": 1720000000000
+}
+```
+
+<Tip>
+  Use `online` to health-check a ZeroTier node in monitoring scripts. A node that is online but has `tcpFallbackActive: true` is degraded — it will work but with higher latency.
+</Tip>

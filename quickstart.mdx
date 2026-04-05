@@ -1,80 +1,196 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: "Quick start"
+description: "Get connected to a ZeroTier virtual network in under five minutes."
 ---
 
-## Get started in three steps
+This guide walks you from a fresh machine to a live connection on a ZeroTier virtual network. You'll install the service, join a network, authorize your device, and verify connectivity.
 
-Get your documentation site running locally and make your first customization.
+<Steps>
 
-### Step 1: Set up your local environment
+<Step title="Install ZeroTier">
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
+Choose your platform and run the install command.
 
-### Step 2: Deploy your changes
+<Tabs>
+  <Tab title="Linux">
+    The fastest way to install on Linux is the official one-liner from zerotier.com. It detects your distribution and configures the package repository automatically.
 
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+    ```bash
+    curl -s https://install.zerotier.com | sudo bash
+    ```
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+    The script supports Debian, Ubuntu, Fedora, CentOS, Rocky, AlmaLinux, Arch, and others. After installation, enable and start the service:
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+    ```bash
+    sudo systemctl enable zerotier-one
+    sudo systemctl start zerotier-one
+    ```
 
-### Step 3: Go live
+    For other installation methods (manual package, building from source), see the [installation guide](/installation).
+  </Tab>
+  <Tab title="macOS">
+    Download the `.pkg` installer from [zerotier.com/download](https://www.zerotier.com/download/). Run the installer and follow the prompts — the service starts automatically and is configured to launch at boot.
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
+    Alternatively, install with Homebrew:
+
+    ```bash
+    brew install zerotier-one
+    sudo launchctl load /Library/LaunchDaemons/com.zerotier.one.plist
+    ```
+  </Tab>
+  <Tab title="Windows">
+    Download the MSI installer from [zerotier.com/download](https://www.zerotier.com/download/). Run it and follow the installation wizard. ZeroTier One starts automatically as a Windows service and installs a system tray application for quick network management.
+  </Tab>
+</Tabs>
+
+</Step>
+
+<Step title="Verify the service is running">
+
+Once the service is running, use `zerotier-cli info` to confirm it's online and get your device's 10-digit ZeroTier address:
+
+```bash
+sudo zerotier-cli info
+```
+
+Expected output:
+
+```
+200 info 3a2c4b1d9e 1.14.0 ONLINE
+```
+
+The three fields are:
+
+| Field | Description |
+|---|---|
+| `3a2c4b1d9e` | Your device's 10-digit ZeroTier address (yours will differ) |
+| `1.14.0` | ZeroTier One version |
+| `ONLINE` | Connection status — should read `ONLINE` once the service has reached a root server |
+
+<Note>
+  On first launch, ZeroTier generates a cryptographic identity (`identity.secret`) in its home directory. On slow systems this can take up to ten seconds. The address is derived from your public key and persists across reboots.
+</Note>
+
+</Step>
+
+<Step title="Join a network">
+
+Every ZeroTier virtual network has a unique **16-digit hexadecimal network ID**. To join one, you need that ID from the network's administrator or from your own controller.
+
+```bash
+sudo zerotier-cli join <network-id>
+```
+
+For example, to join ZeroTier's public "Earth" demo network:
+
+```bash
+sudo zerotier-cli join 8056c2e21c000001
+```
+
+Expected output:
+
+```
+200 join OK
+```
+
+<Note>
+  **Public vs. private networks**
+
+  Networks can be configured as public or private on the controller:
+
+  - **Private networks** (the default) require the network administrator to explicitly authorize each joining device before it receives an IP address or can communicate with other members. Unauthorized devices see `ACCESS_DENIED` in `listnetworks`.
+  - **Public networks** authorize any device automatically on join. Use public networks only when open access is intentional.
+</Note>
+
+</Step>
+
+<Step title="Authorize your device">
+
+For private networks, your device shows up as `ACCESS_DENIED` until an administrator approves it. Authorization happens on the network controller.
+
+**Using my.zerotier.com (hosted controller)**
+
+1. Sign in at [my.zerotier.com](https://my.zerotier.com).
+2. Open your network from the **Networks** list.
+3. Scroll to the **Members** section — your device appears with the 10-digit address shown by `zerotier-cli info`.
+4. Check the **Auth** checkbox next to your device.
+5. Optionally assign a name and a managed IP address.
+
+**Using a self-hosted controller**
+
+If you run your own network controller, use its API or web UI to authorize the member. The device's 10-digit ZeroTier address is the member ID you'll need.
+
+<Tip>
+  Your device's address is always visible with `sudo zerotier-cli info`. Copy it before opening the controller so you can identify the right member in the list.
+</Tip>
+
+</Step>
+
+<Step title="Verify network membership">
+
+After authorization, check that your device has joined the network and received an IP address:
+
+```bash
+sudo zerotier-cli listnetworks
+```
+
+Expected output once authorized:
+
+```
+200 listnetworks <nwid> <name> <mac> <status> <type> <dev> <ZT-assigned ips>
+200 listnetworks 8056c2e21c000001 earth 02:a4:c3:91:05:4b OK PUBLIC zt2s3d9f1a 29.17.34.182/7
+```
+
+Key fields:
+
+| Field | Description |
+|---|---|
+| `<nwid>` | The 16-digit network ID |
+| `<status>` | `OK` means authorized and connected; `ACCESS_DENIED` means awaiting authorization |
+| `<dev>` | The virtual network interface created on your system (e.g., `zt2s3d9f1a`) |
+| `<ZT-assigned ips>` | IP addresses assigned by the network controller |
+
+Wait a few seconds after authorizing on the controller before checking — the status update propagates quickly but not instantly.
+
+</Step>
+
+<Step title="Test connectivity">
+
+With two or more authorized devices on the same network, test reachability using their ZeroTier-assigned IP addresses:
+
+```bash
+ping <zerotier-ip-of-other-device>
+```
+
+For the "Earth" public network, ZeroTier provides a test host:
+
+```bash
+ping earth.zerotier.net
+```
+
+If ping succeeds, your device is fully connected to the virtual network. Traffic flows peer-to-peer wherever possible — ZeroTier's root servers handle connection setup and relay only as a fallback.
+
+<Tip>
+  Use `sudo zerotier-cli listpeers` to see devices your node has recently communicated with, including root servers and other network members.
+</Tip>
+
+</Step>
+
+</Steps>
 
 ## Next steps
 
-Now that you have your docs running, explore these key features:
-
 <CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
+  <Card title="Installation" icon="download" href="/installation">
+    Platform-specific install instructions for Linux, macOS, Windows, FreeBSD, OpenBSD, and Docker
+  </Card>
+  <Card title="Core concepts" icon="lightbulb" href="/concepts/architecture">
+    Understand how VL1, VL2, identities, and network controllers work together
+  </Card>
+  <Card title="Network controller" icon="server" href="/deployment/self-hosted-controller">
+    Run your own controller for full ownership of your network infrastructure
+  </Card>
+  <Card title="API reference" icon="code" href="/api/overview">
+    Control ZeroTier programmatically via the local JSON API at 127.0.0.1:9993
+  </Card>
 </CardGroup>
-
-<Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
-</Note>

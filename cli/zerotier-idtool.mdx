@@ -1,0 +1,232 @@
+---
+title: "zerotier-idtool"
+description: "Tool for creating and manipulating ZeroTier cryptographic identities."
+---
+
+`zerotier-idtool` is a standalone utility for working with ZeroTier identities offline — generating new key pairs, validating existing ones, signing files, verifying signatures, and creating membership certificates. It never contacts the network and does not require the `zerotier-one` service to be running.
+
+A ZeroTier identity is a public/private ECC-256 key pair paired with a 10-digit hexadecimal address derived from the public key via a proof-of-work hash function. The full identity (address + public key + private key) lives in `identity.secret`; the public-only form lives in `identity.public`.
+
+## Synopsis
+
+```bash
+zerotier-idtool <command> [args]
+```
+
+`zerotier-idtool` is also available as a sub-personality of the main `zerotier-one` binary:
+
+```bash
+zerotier-one -i <command> [args]
+```
+
+## Commands
+
+### `generate`
+
+```bash
+zerotier-idtool generate [secret-file] [public-file] [vanity-prefix]
+```
+
+Generate a new ZeroTier identity. With no arguments, the full secret identity is printed to stdout. When file paths are provided, the secret identity is written to `secret-file` and the public-only form to `public-file`.
+
+The optional `vanity-prefix` is a hexadecimal string that the generated address must start with. Because every candidate identity requires a proof-of-work computation, vanity generation is expensive:
+
+| Prefix length | Expected generation time (2.8 GHz single core) |
+|---|---|
+| 1 hex digit (4 bits) | Seconds |
+| 2 hex digits (8 bits) | ~30 seconds |
+| 4 hex digits (16 bits) | ~2 hours |
+| 6 hex digits (24 bits) | ~2 months |
+
+<Warning>
+  Vanity generation is CPU-bound and runs on a single core. Prefixes longer than four digits are impractical for most purposes.
+</Warning>
+
+<CodeGroup>
+
+```bash Generate and print to stdout
+zerotier-idtool generate
+```
+
+```bash Generate and write to files
+zerotier-idtool generate identity.secret identity.public
+```
+
+```bash Generate a vanity address starting with "beef"
+zerotier-idtool generate beef.secret beef.public beef
+```
+
+</CodeGroup>
+
+Example output (stdout form):
+
+```
+b0c3d7f1a2:0:a84f...:<long hex public key>:<long hex private key>
+```
+
+The format is `address:0:public-key-bytes:private-key-bytes` — the `0` is the key type identifier (Curve25519/Ed25519).
+
+---
+
+### `validate`
+
+```bash
+zerotier-idtool validate <identity>
+```
+
+Locally validate that an identity's public key and proof-of-work are internally consistent. The identity can be a file path or a raw identity string passed directly on the command line. Both secret and public-only forms are accepted.
+
+This check is entirely offline — it verifies the cryptographic relationship between the address and the public key but does not contact any ZeroTier infrastructure.
+
+```bash
+zerotier-idtool validate identity.public
+```
+
+```bash
+zerotier-idtool validate identity.secret
+```
+
+If valid, the command exits silently with code `0`. An invalid identity prints an error and exits non-zero.
+
+---
+
+### `getpublic`
+
+```bash
+zerotier-idtool getpublic <full-identity-with-secret>
+```
+
+Extract and print the public portion of an `identity.secret` file. The output contains only the address and public key — no private key material.
+
+```bash
+zerotier-idtool getpublic identity.secret
+```
+
+```
+b0c3d7f1a2:0:a84f...:<long hex public key>
+```
+
+Use this to safely share your node's public identity, or to generate an `identity.public` file from an existing `identity.secret`:
+
+```bash
+zerotier-idtool getpublic identity.secret > identity.public
+```
+
+---
+
+### `sign`
+
+```bash
+zerotier-idtool sign <full-identity-with-secret> <file-to-sign>
+```
+
+Sign the contents of a file using the identity's private key. The signature algorithm is SHA-512 + ECC-256 (Ed25519). The hex-encoded signature is printed to stdout.
+
+```bash
+zerotier-idtool sign identity.secret firmware.bin
+```
+
+```
+3f8a2b...c901  (512 hex characters)
+```
+
+Save the signature to a file for later verification:
+
+```bash
+zerotier-idtool sign identity.secret firmware.bin > firmware.bin.sig
+```
+
+---
+
+### `verify`
+
+```bash
+zerotier-idtool verify <identity> <file-to-check> <signature-in-hex>
+```
+
+Verify a signature produced by `sign`. The identity argument can be `identity.public` (public-only form) or `identity.secret` — only the public key is used for verification.
+
+```bash
+zerotier-idtool verify identity.public firmware.bin 3f8a2b...c901
+```
+
+```bash
+zerotier-idtool verify identity.public firmware.bin $(cat firmware.bin.sig)
+```
+
+Exits with code `0` if the signature is valid, non-zero otherwise.
+
+---
+
+### `mkcom`
+
+```bash
+zerotier-idtool mkcom <full-identity-with-secret> [id,value,maxdelta] [...]
+```
+
+Create and sign a network membership certificate (COM — Certificate of Membership). Each `id,value,maxdelta` tuple describes one credential in the certificate.
+
+```bash
+zerotier-idtool mkcom identity.secret 1,12345,32 2,0,0
+```
+
+<Note>
+  Network controllers create and distribute membership certificates automatically as part of the join/authorization flow. You will almost never need `mkcom` outside of testing and development of the ZeroTier protocol itself.
+</Note>
+
+## zerotier-idtool vs. the service API
+
+Use `zerotier-idtool` when you need to:
+
+- Generate identities on a machine that does not run `zerotier-one`
+- Sign or verify files with a ZeroTier identity key (independent of any network)
+- Validate an identity file before deploying it to a node
+- Work with identities in scripts and CI pipelines without a running daemon
+
+Use the `zerotier-one` service and its [JSON API](/api/overview) when you need to:
+
+- Join or leave networks
+- Inspect connected peers and network state
+- Manage a network controller
+
+## Full workflow example
+
+<Steps>
+  <Step title="Generate a new identity">
+    ```bash
+    zerotier-idtool generate node.secret node.public
+    ```
+    This creates two files: `node.secret` (private + public, keep this safe) and `node.public` (public only, safe to distribute).
+  </Step>
+  <Step title="Validate the identity">
+    ```bash
+    zerotier-idtool validate node.secret
+    ```
+    Exits silently if the identity is well-formed. Run this after generating or copying an identity to confirm integrity.
+  </Step>
+  <Step title="Sign a file">
+    ```bash
+    zerotier-idtool sign node.secret config.json > config.json.sig
+    ```
+  </Step>
+  <Step title="Verify the signature on another machine">
+    Copy `node.public`, `config.json`, and `config.json.sig` to the target machine, then:
+    ```bash
+    zerotier-idtool verify node.public config.json $(cat config.json.sig)
+    echo $?   # 0 = valid
+    ```
+  </Step>
+  <Step title="Deploy the identity to a ZeroTier node">
+    Copy `node.secret` to the working directory of the target node as `identity.secret`, then start the service. The node will claim the address encoded in that identity.
+    ```bash
+    sudo cp node.secret /var/lib/zerotier-one/identity.secret
+    sudo systemctl start zerotier-one
+    ```
+  </Step>
+</Steps>
+
+## See also
+
+- [`zerotier-one`](/cli/zerotier-one) — the service daemon that uses these identities
+- [`zerotier-cli`](/cli/zerotier-cli) — control the running service
+- [Identities concept guide](/concepts/identities) — how ZeroTier addresses and keys work

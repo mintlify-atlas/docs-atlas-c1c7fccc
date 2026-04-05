@@ -1,0 +1,236 @@
+---
+title: "Docker"
+description: "Run ZeroTier One inside a Docker container."
+---
+
+The official `zerotier/zerotier` image lets you run ZeroTier One as a container without installing it on the host. The image is based on Debian Bookworm and packages a release build of `zerotier-one` along with a small shell entrypoint that manages startup, network joins, and graceful shutdown.
+
+<Note>
+  ZeroTier needs to create virtual network interfaces on the host kernel. This requires the `NET_ADMIN` capability and access to `/dev/net/tun`. The container cannot function without these.
+</Note>
+
+## Pulling the image
+
+```bash
+docker pull zerotier/zerotier:latest
+```
+
+Versioned tags match ZeroTier release versions (e.g. `zerotier/zerotier:1.16.1`). Using a pinned version is recommended in production.
+
+## Running the container
+
+Pass one or more network IDs as positional arguments to join them automatically at startup:
+
+```bash
+docker run \
+  --name zerotier \
+  --rm \
+  --cap-add NET_ADMIN \
+  --device /dev/net/tun \
+  -p 9993:9993/udp \
+  zerotier/zerotier:latest <network-id>
+```
+
+ZeroTier spawns in the background inside the container. The entrypoint then sleeps indefinitely, forwarding `SIGINT` and `SIGTERM` to `zerotier-one` for clean shutdown.
+
+To verify the node joined the network:
+
+```bash
+docker exec zerotier zerotier-cli listnetworks
+```
+
+<Tip>
+  Joining a network means the node has sent a join request — it does not guarantee an IP address. A network administrator must authorize the member at [my.zerotier.com](https://my.zerotier.com) or via a self-hosted controller before traffic can flow.
+</Tip>
+
+## Required flags
+
+| Flag | Purpose |
+|------|---------|
+| `--cap-add NET_ADMIN` | Allows ZeroTier to create and configure virtual network interfaces. |
+| `--device /dev/net/tun` | Forwards the TUN device from the host into the container. |
+| `-p 9993:9993/udp` | Exposes the ZeroTier UDP port so peers can reach this node directly. Without this, all traffic is relayed. |
+
+<Warning>
+  Do not use `--privileged` for regular client containers — `--cap-add NET_ADMIN` with `--device /dev/net/tun` is sufficient and more secure. `--privileged` is unnecessary unless you are running a controller-only instance that also needs broader system access for other reasons.
+</Warning>
+
+## Persisting the ZeroTier home directory
+
+By default, ZeroTier stores its identity (`identity.secret`, `identity.public`), auth token (`authtoken.secret`), and network state under `/var/lib/zerotier-one` inside the container. When the container is removed this data is lost and the node gets a new identity on the next start.
+
+Mount a host directory or named volume to persist state across restarts:
+
+<Tabs>
+  <Tab title="Named volume">
+    ```bash
+    docker run \
+      --name zerotier \
+      --cap-add NET_ADMIN \
+      --device /dev/net/tun \
+      -p 9993:9993/udp \
+      -v zerotier-data:/var/lib/zerotier-one \
+      zerotier/zerotier:latest <network-id>
+    ```
+  </Tab>
+  <Tab title="Bind mount">
+    ```bash
+    docker run \
+      --name zerotier \
+      --cap-add NET_ADMIN \
+      --device /dev/net/tun \
+      -p 9993:9993/udp \
+      -v /path/to/zerotier-data:/var/lib/zerotier-one \
+      zerotier/zerotier:latest <network-id>
+    ```
+  </Tab>
+</Tabs>
+
+<Note>
+  The directory at `/var/lib/zerotier-one` is removed from the image at build time. Docker creates it fresh from your volume on first run.
+</Note>
+
+## Environment variables
+
+The entrypoint reads several environment variables before starting `zerotier-one`. All are optional.
+
+<AccordionGroup>
+  <Accordion title="ZEROTIER_JOIN_NETWORKS">
+    Space-separated list of network IDs to join. This is an alternative to passing network IDs as command-line arguments — both methods can be used together.
+
+    ```bash
+    -e ZEROTIER_JOIN_NETWORKS="abcdef1234567890 fedcba0987654321"
+    ```
+  </Accordion>
+
+  <Accordion title="ZEROTIER_API_SECRET">
+    Replaces `authtoken.secret` before ZeroTier starts. Use this to set a known API token so you can authenticate against the local control socket at `localhost:9993` from outside the container.
+
+    ```bash
+    -e ZEROTIER_API_SECRET="my-secret-token"
+    ```
+
+    Both `authtoken.secret` and `metricstoken.secret` are written with this value.
+  </Accordion>
+
+  <Accordion title="ZEROTIER_IDENTITY_PUBLIC and ZEROTIER_IDENTITY_SECRET">
+    Pre-provision a ZeroTier identity inside the container. Use `zerotier-idtool` to generate an identity pair, then pass the file contents as environment variables.
+
+    ```bash
+    -e ZEROTIER_IDENTITY_PUBLIC="$(cat identity.public)" \
+    -e ZEROTIER_IDENTITY_SECRET="$(cat identity.secret)"
+    ```
+
+    Pre-provisioning ensures the node address remains stable even if the container is recreated without a persistent volume.
+  </Accordion>
+
+  <Accordion title="ZEROTIER_LOCAL_CONF">
+    Sets the content of `local.conf` before startup. Pass a JSON string to configure ZeroTier behavior without mounting a config file.
+
+    ```bash
+    -e ZEROTIER_LOCAL_CONF='{"settings":{"portMappingEnabled":false}}'
+    ```
+
+    Added in version 1.16.0 (PR #2445). See the [local.conf reference](https://docs.zerotier.com/config) for all available settings.
+  </Accordion>
+</AccordionGroup>
+
+## Docker Compose
+
+A complete Compose file for a persistent ZeroTier client node:
+
+```yaml docker-compose.yml
+services:
+  zerotier:
+    image: zerotier/zerotier:1.16.1
+    container_name: zerotier
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun
+    ports:
+      - "9993:9993/udp"
+    volumes:
+      - zerotier-data:/var/lib/zerotier-one
+    environment:
+      ZEROTIER_JOIN_NETWORKS: "abcdef1234567890"
+      # ZEROTIER_API_SECRET: "replace-with-your-token"
+    restart: unless-stopped
+
+volumes:
+  zerotier-data:
+```
+
+Start it with:
+
+```bash
+docker compose up -d
+```
+
+Check status:
+
+```bash
+docker compose exec zerotier zerotier-cli status
+docker compose exec zerotier zerotier-cli listnetworks
+```
+
+## Running a controller in Docker
+
+Network controllers do not need to create virtual interfaces — they only serve API requests and communicate over UDP/9993. This means `--device /dev/net/tun` and `--cap-add NET_ADMIN` are not required for controller-only deployments.
+
+```bash
+docker run \
+  --name zt-controller \
+  -p 9993:9993/udp \
+  -v zt-controller-data:/var/lib/zerotier-one \
+  zerotier/zerotier:latest
+```
+
+<Note>
+  The default binary builds since 1.16.0 do not include the controller. To run a controller in Docker, you need an image built with `ZT_NONFREE=1` or a pre-1.16 image. See [self-hosted controller](/deployment/self-hosted-controller) for details.
+</Note>
+
+Map port 9993 from the host to allow network members to reach the controller:
+
+```yaml docker-compose.yml
+services:
+  zt-controller:
+    image: zerotier/zerotier:1.16.1   # must be built with ZT_NONFREE=1
+    container_name: zt-controller
+    ports:
+      - "9993:9993/udp"
+    volumes:
+      - zt-controller-data:/var/lib/zerotier-one
+    environment:
+      ZEROTIER_API_SECRET: "your-controller-auth-token"
+    restart: unless-stopped
+
+volumes:
+  zt-controller-data:
+```
+
+The controller API is then reachable at `http://localhost:9993/controller` using `X-ZT1-Auth: your-controller-auth-token`.
+
+## Building a custom image
+
+The `Dockerfile.release` in the repository uses build arguments to fetch a specific package version from the ZeroTier Debian repository:
+
+```bash
+docker build \
+  -f Dockerfile.release \
+  -t my-zerotier \
+  --build-arg VERSION=1.16.1 \
+  .
+```
+
+Build arguments:
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `VERSION` | *(required)* | ZeroTier package version to install. |
+| `ARCH` | `amd64` | Debian architecture string. Must match the target image architecture. |
+| `PACKAGE_BASEURL` | `https://download.zerotier.com/debian/bookworm/pool/main/z/zerotier-one/` | Base URL of the package repository. |
+
+<Tip>
+  Pre-generate your identities with the [ZeroTier Terraform provider](https://github.com/zerotier/terraform-provider-zerotier) or `zerotier-idtool` and inject them via environment variables. This lets you predict the node address before the container first runs.
+</Tip>

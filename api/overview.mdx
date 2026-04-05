@@ -1,0 +1,142 @@
+---
+title: "API overview"
+description: "ZeroTier One's local JSON API — authentication, request format, and base URL."
+---
+
+ZeroTier One exposes a local JSON/HTTP API that lets you query node status, join and leave networks, and inspect peers. All API calls go to `http://127.0.0.1:9993` (or your configured port) and require authentication via a secret token.
+
+<CardGroup cols={3}>
+  <Card title="Status" icon="circle-info" href="/api/status">
+    Node address, version, and connectivity state
+  </Card>
+  <Card title="Networks" icon="network-wired" href="/api/networks">
+    Join, leave, and inspect network memberships
+  </Card>
+  <Card title="Peers" icon="sitemap" href="/api/peers">
+    List and inspect VL1 peers known to this node
+  </Card>
+</CardGroup>
+
+## Base URL
+
+```
+http://127.0.0.1:9993
+```
+
+The service binds to localhost on port **9993** by default. The port is stored in `zerotier-one.port` in the working directory and is read by `zerotier-cli` at startup.
+
+To use a different port, pass the `-p` flag when starting `zerotier-one`:
+
+```bash
+sudo zerotier-one -p12345
+```
+
+Or set `primaryPort` in `local.conf`:
+
+```json
+{
+  "settings": {
+    "primaryPort": 12345
+  }
+}
+```
+
+## Authentication
+
+Every request must be authenticated. The service reads a secret token from `authtoken.secret` in its working directory and accepts it in two ways:
+
+<Tabs>
+  <Tab title="HTTP header">
+    ```bash
+    curl -H "X-ZT1-Auth: <token>" http://127.0.0.1:9993/status
+    ```
+  </Tab>
+  <Tab title="Query parameter">
+    ```bash
+    curl "http://127.0.0.1:9993/status?auth=<token>"
+    ```
+  </Tab>
+</Tabs>
+
+<ParamField header="X-ZT1-Auth" type="string" required>
+  The contents of `authtoken.secret`. Preferred over the query parameter because the header is not logged by most HTTP intermediaries.
+</ParamField>
+
+### Reading the auth token
+
+The token is stored in `authtoken.secret` in the ZeroTier working directory. The path varies by platform:
+
+| Platform | Default path |
+| -------- | ------------ |
+| Linux | `/var/lib/zerotier-one/authtoken.secret` |
+| macOS | `/Library/Application Support/ZeroTier/One/authtoken.secret` |
+| FreeBSD / OpenBSD | `/var/db/zerotier-one/authtoken.secret` |
+| Windows | `\ProgramData\ZeroTier\One\authtoken.secret` |
+
+Read the token and pass it directly to `curl`:
+
+```bash
+curl -H "X-ZT1-Auth: $(sudo cat /var/lib/zerotier-one/authtoken.secret)" \
+  http://127.0.0.1:9993/status
+```
+
+<Note>
+  `authtoken.secret` is generated from a secure random source on first start if it does not exist. Protect this file — anyone with read access can control your ZeroTier node.
+</Note>
+
+## Supported HTTP methods
+
+| Method | Behavior |
+| ------ | -------- |
+| `GET` | Read a resource |
+| `POST` | Create or update a resource |
+| `PUT` | Alias for `POST` — treated identically |
+| `DELETE` | Remove a resource |
+
+`HEAD` and other methods are **not** supported.
+
+## Type sensitivity
+
+Values in POST bodies are strictly type-checked. Common mistakes that cause fields to be silently ignored:
+
+<Warning>
+  JSON types must be exact. Quoting an integer (`"9993"` instead of `9993`), adding a decimal point to an integer (`9993.0`), or using anything other than `true`/`false` for booleans will cause the field to be ignored or rejected.
+</Warning>
+
+| Value | Correct | Incorrect |
+| ----- | ------- | --------- |
+| Integer | `9993` | `"9993"` or `9993.0` |
+| Boolean | `true` / `false` | `"true"` or `1` |
+| String | `"hello"` | `hello` |
+
+Unrecognized fields in JSON objects are silently ignored.
+
+## JSONP support
+
+Append a `?jsonp=<function>` query parameter to wrap the response in a JavaScript function call. The response is served as `application/javascript` with the JSON payload passed as the sole argument to the named function.
+
+```
+GET http://127.0.0.1:9993/status?auth=<token>&jsonp=myCallback
+```
+
+Response:
+
+```javascript
+myCallback({"address":"deadbeef12",...});
+```
+
+## Allowing remote management
+
+By default the API only accepts connections from `127.0.0.1`. To allow management from other addresses, set `allowManagementFrom` in `local.conf`:
+
+```json
+{
+  "settings": {
+    "allowManagementFrom": ["10.0.0.0/24"]
+  }
+}
+```
+
+<Warning>
+  Exposing the management API to non-localhost addresses allows any client on those networks to fully control your ZeroTier node. Use this only on trusted networks and always require authentication.
+</Warning>

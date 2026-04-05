@@ -1,0 +1,247 @@
+---
+title: "Networks"
+description: "Join, leave, and inspect virtual network memberships via the ZeroTier service API."
+---
+
+The `/network` endpoints let you list all networks the local node has joined, inspect individual network memberships, join a new network, and leave a network. Most network settings are read-only because they are defined by the network controller — only four local preference fields are writable.
+
+## GET /network
+
+Returns an array of network objects for every network this node has joined.
+
+```bash
+GET http://127.0.0.1:9993/network
+```
+
+### Example
+
+```bash
+curl -H "X-ZT1-Auth: $(sudo cat /var/lib/zerotier-one/authtoken.secret)" \
+  http://127.0.0.1:9993/network
+```
+
+### Example response
+
+```json
+[
+  {
+    "id": "8056c2e21c000001",
+    "nwid": "8056c2e21c000001",
+    "name": "earth",
+    "status": "OK",
+    "type": "PUBLIC",
+    "mac": "b2:35:4a:12:cc:ff",
+    "mtu": 2800,
+    "dhcp": false,
+    "bridge": false,
+    "broadcastEnabled": true,
+    "portError": 0,
+    "netconfRevision": 42,
+    "assignedAddresses": ["28.0.0.1/7"],
+    "routes": [
+      { "target": "28.0.0.0/7", "via": null, "flags": 0, "metric": 0 }
+    ],
+    "portDeviceName": "ztmjfp7kiq",
+    "allowManaged": true,
+    "allowGlobal": false,
+    "allowDefault": false,
+    "allowDNS": false
+  }
+]
+```
+
+---
+
+## GET /network/\<network-id\>
+
+Returns the network object for a single joined network identified by its 16-digit hex network ID.
+
+```bash
+GET http://127.0.0.1:9993/network/<network-id>
+```
+
+### Example
+
+```bash
+curl -H "X-ZT1-Auth: $(sudo cat /var/lib/zerotier-one/authtoken.secret)" \
+  http://127.0.0.1:9993/network/8056c2e21c000001
+```
+
+### Response fields
+
+<ResponseField name="id" type="string">
+  16-digit hexadecimal network ID. The first 10 digits are the ZeroTier address of the network controller; the last 6 are the network-specific portion.
+</ResponseField>
+
+<ResponseField name="nwid" type="string">
+  Identical to `id`. Retained for backwards compatibility with older clients.
+</ResponseField>
+
+<ResponseField name="mac" type="string">
+  MAC address assigned to the virtual network interface for this network on this node. Format: `aa:bb:cc:dd:ee:ff`.
+</ResponseField>
+
+<ResponseField name="name" type="string">
+  Short human-readable name of the network, as configured by the network controller. May be an empty string if the controller has not set one or if the node has not yet received a configuration.
+</ResponseField>
+
+<ResponseField name="status" type="string">
+  Current membership status. Common values:
+
+  - `OK` — authorized and operational
+  - `ACCESS_DENIED` — the network controller has not authorized this node
+  - `NOT_FOUND` — the network ID does not correspond to a known controller
+  - `PORT_ERROR` — the virtual network interface could not be created (check `portError`)
+  - `REQUESTING_CONFIGURATION` — waiting for the controller to respond
+</ResponseField>
+
+<ResponseField name="type" type="string">
+  Network access type. Either `PUBLIC` (any node may join without authorization) or `PRIVATE` (nodes must be explicitly authorized by the controller).
+</ResponseField>
+
+<ResponseField name="mtu" type="integer">
+  Ethernet MTU for the virtual network interface, in bytes. ZeroTier supports up to 2800 by default.
+</ResponseField>
+
+<ResponseField name="dhcp" type="boolean">
+  `true` if the network controller has indicated that DHCP should be used for IP address assignment instead of ZeroTier's built-in IP management.
+</ResponseField>
+
+<ResponseField name="bridge" type="boolean">
+  `true` if this node is permitted to act as a bridge and forward traffic for other Ethernet devices on behalf of the network.
+</ResponseField>
+
+<ResponseField name="broadcastEnabled" type="boolean">
+  `true` if Ethernet broadcast (`ff:ff:ff:ff:ff:ff`) frames are enabled on this network. Broadcast is required by many protocols (e.g., ARP) but can be disabled on large networks to reduce traffic.
+</ResponseField>
+
+<ResponseField name="portError" type="integer">
+  Error code returned by the underlying tap/tun driver when creating or managing the virtual network port. `0` means no error. Non-zero values are platform-specific OS error codes.
+</ResponseField>
+
+<ResponseField name="netconfRevision" type="integer">
+  Monotonically increasing revision number of the network configuration received from the controller. Increments each time the controller pushes a new configuration.
+</ResponseField>
+
+<ResponseField name="assignedAddresses" type="string[]">
+  Array of IP addresses (with CIDR prefix length) that ZeroTier has assigned to this node on this network. Example: `["10.147.20.5/16", "fd80::1/88"]`.
+</ResponseField>
+
+<ResponseField name="routes" type="object[]">
+  Array of route objects that the network controller has pushed to this node.
+
+  <Expandable title="route object fields">
+    <ResponseField name="target" type="string">
+      Destination network in CIDR notation, e.g. `"10.0.0.0/8"`.
+    </ResponseField>
+    <ResponseField name="via" type="string">
+      Next-hop gateway IP address, or `null` if the route is directly reachable over the virtual interface (an on-link route).
+    </ResponseField>
+    <ResponseField name="flags" type="integer">
+      Route flags bitmask. Currently always `0`.
+    </ResponseField>
+    <ResponseField name="metric" type="integer">
+      Route metric for tie-breaking. Not currently used by ZeroTier but reserved for future use.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="portDeviceName" type="string">
+  Name of the virtual network interface created by ZeroTier on the host OS, e.g. `"ztmjfp7kiq"` on Linux or `"feth0"` on macOS. May be empty on platforms that do not expose a named device.
+</ResponseField>
+
+<ResponseField name="allowManaged" type="boolean">
+  **Writable.** If `true`, ZeroTier manages IP addresses and routes for this network (assigns `assignedAddresses` to the interface and installs `routes` into the routing table). Set to `false` to handle addressing manually. Default: `true`.
+</ResponseField>
+
+<ResponseField name="allowGlobal" type="boolean">
+  **Writable.** If `true`, ZeroTier will accept and apply assigned addresses and routes that overlap with globally routable (public) IP space. By default (`false`), only RFC-1918 and other private ranges are managed to prevent accidental conflicts with real Internet routing.
+</ResponseField>
+
+<ResponseField name="allowDefault" type="boolean">
+  **Writable.** If `true`, ZeroTier will allow the network controller to override the system's default route (`0.0.0.0/0`), routing all traffic through the virtual network. Use with caution — enabling this on the wrong network will break general Internet connectivity.
+</ResponseField>
+
+<ResponseField name="allowDNS" type="boolean">
+  **Writable.** If `true`, ZeroTier will apply DNS server configuration pushed by the network controller. Default: `false`.
+</ResponseField>
+
+---
+
+## POST /network/\<network-id\>
+
+Joins a network. POST to `/network/<network-id>` with an empty body to join with default settings, or include a JSON body to set writable fields at join time.
+
+```bash
+POST http://127.0.0.1:9993/network/<network-id>
+```
+
+### Request body (optional)
+
+The body may be omitted entirely. If provided, only the four writable fields are accepted; all others are ignored.
+
+<ParamField body="allowManaged" type="boolean" default="true">
+  Allow ZeroTier to manage IP addresses and routes for this network.
+</ParamField>
+
+<ParamField body="allowGlobal" type="boolean" default="false">
+  Allow managed routes and addresses that overlap with public IP space.
+</ParamField>
+
+<ParamField body="allowDefault" type="boolean" default="false">
+  Allow the network to override the system default route.
+</ParamField>
+
+<ParamField body="allowDNS" type="boolean" default="false">
+  Allow the network controller to configure DNS.
+</ParamField>
+
+### Examples
+
+<CodeGroup>
+
+```bash Join with defaults
+curl -X POST \
+  -H "X-ZT1-Auth: $(sudo cat /var/lib/zerotier-one/authtoken.secret)" \
+  http://127.0.0.1:9993/network/8056c2e21c000001
+```
+
+```bash Join with custom settings
+curl -X POST \
+  -H "X-ZT1-Auth: $(sudo cat /var/lib/zerotier-one/authtoken.secret)" \
+  -H "Content-Type: application/json" \
+  -d '{"allowManaged": true, "allowGlobal": false, "allowDefault": false, "allowDNS": true}' \
+  http://127.0.0.1:9993/network/8056c2e21c000001
+```
+
+</CodeGroup>
+
+Returns the network object for the newly joined network.
+
+<Note>
+  Joining a `PRIVATE` network immediately sends a join request to the controller, but the status will remain `REQUESTING_CONFIGURATION` or `ACCESS_DENIED` until a network administrator authorizes this node at [my.zerotier.com](https://my.zerotier.com) or via the controller API.
+</Note>
+
+---
+
+## DELETE /network/\<network-id\>
+
+Leaves a network. The node will stop participating, its virtual interface for that network will be torn down, and the associated routes will be removed from the routing table.
+
+```bash
+DELETE http://127.0.0.1:9993/network/<network-id>
+```
+
+### Example
+
+```bash
+curl -X DELETE \
+  -H "X-ZT1-Auth: $(sudo cat /var/lib/zerotier-one/authtoken.secret)" \
+  http://127.0.0.1:9993/network/8056c2e21c000001
+```
+
+Returns the deleted network object on success.
+
+<Warning>
+  Leaving a network is immediate and removes managed routes. If you are relying on ZeroTier for remote access to a machine, leaving the network will disconnect you.
+</Warning>

@@ -1,0 +1,203 @@
+---
+title: "Architecture"
+description: "How ZeroTier's two-layer network stack works — VL1 peer-to-peer transport and VL2 virtual Ethernet."
+---
+
+ZeroTier is described in its own source as "a smart programmable Ethernet switch for planet Earth." To achieve this it stacks two distinct protocol layers on top of ordinary UDP: **VL1**, a cryptographically addressed peer-to-peer transport, and **VL2**, a virtual Ethernet emulation layer. Every frame that travels over ZeroTier passes through both layers.
+
+## The Two-Layer Model
+
+<CardGroup cols={2}>
+  <Card title="VL1 — Peer Transport" icon="network-wired">
+    Cryptographic addressing, peer discovery, NAT traversal, and authenticated encrypted delivery. Think of it as a planet-scale point-to-point mesh.
+  </Card>
+  <Card title="VL2 — Virtual Ethernet" icon="ethernet">
+    Ethernet frame switching, network access control, IP assignment, and flow rules. Think of it as a programmable virtual switch sitting on top of VL1.
+  </Card>
+</CardGroup>
+
+The separation is deliberate. VL1 knows nothing about Ethernet or network membership — it only knows how to securely deliver packets between two ZeroTier addresses. VL2 knows nothing about the physical internet — it only works with the authenticated, encrypted tunnels VL1 provides. This clean layering is reflected directly in the node's core source (`node/README.md`):
+
+> "Give it wire packets and it gives you Ethernet packets, and vice versa."
+
+---
+
+## VL1 — The Cryptographic Peer Network
+
+VL1 provides the physical delivery substrate. Every packet sent between two ZeroTier nodes travels over VL1, authenticated and encrypted.
+
+### Cryptographic Addressing
+
+Every ZeroTier node has a unique **40-bit address** (10 hex digits, e.g. `a1b2c3d4e5`). This address is not assigned by any central authority — it is derived directly from the node's ECC-256 public key via a memory-hard proof-of-work function. The address is effectively a fingerprint of the key. See [Identities](/concepts/identities) for the full derivation algorithm.
+
+Because the address is cryptographically bound to the public key, no one can impersonate an address without also possessing the corresponding private key. Packets include the sender's identity so the recipient can verify authenticity on first contact.
+
+### Peer Discovery and Root Servers
+
+Before two peers can communicate directly they must locate each other. ZeroTier uses a hierarchy of root servers for this:
+
+<AccordionGroup>
+  <Accordion title="Planets">
+    **Planets** are ZeroTier Inc.'s globally distributed root servers. They are hard-coded into the client and act as the default bootstrap points for peer discovery. Every fresh ZeroTier node contacts a Planet to announce itself and to ask for introductions to other peers.
+
+    Planets are defined at build time in a signed "world" object. The node's `planet()` method (`node/Node.hpp:180`) returns the current planet definition at runtime.
+  </Accordion>
+  <Accordion title="Moons (deprecated)">
+    **Moons** are private root servers that you operate yourself. Orbiting a Moon (`zerotier-cli orbit <worldId> <seed>`) adds it as an additional bootstrap point — or replaces Planets entirely for air-gapped deployments.
+
+    The `orbit` and `deorbit` methods in `Node` (`node/Node.hpp:78-79`) manage Moon membership at runtime. The `moons()` method returns all currently orbited Moons.
+
+    <Warning>
+      Moons are deprecated as of ZeroTier 1.16.0 and should not be used in new deployments. The preferred approach for custom relay infrastructure is network-specific relays, introduced in 1.16.0 (currently in preview/beta).
+    </Warning>
+  </Accordion>
+</AccordionGroup>
+
+<Note>
+  Roots do not carry network traffic. They only assist with peer discovery and relay packets when a direct path cannot be established. Traffic relayed through roots is still end-to-end encrypted — roots cannot read it.
+</Note>
+
+### NAT Traversal and Direct Connections
+
+Once two peers know each other's public addresses (learned via a root), VL1 attempts to establish a **direct path**:
+
+<Steps>
+  <Step title="HELLO exchange">
+    Each peer sends a `VERB_HELLO` packet containing its identity and current timestamp to the other. This authenticates both sides and seeds key agreement.
+  </Step>
+  <Step title="Path negotiation">
+    Peers exchange candidate physical addresses via `VERB_PUSH_DIRECT_PATHS`. The node tracks up to `ZT_MAX_PEER_NETWORK_PATHS` (64) simultaneous paths per peer (`include/ZeroTierOne.h:168`).
+  </Step>
+  <Step title="NAT hole-punch">
+    When peers are behind NAT, a root (or any mutually known peer) sends `VERB_RENDEZVOUS` to both sides simultaneously. Each side immediately sends a packet to the other's external address, punching a hole through both NATs.
+  </Step>
+  <Step title="Path selection">
+    The `Path` class (`node/Path.hpp`) tracks latency, packet loss ratio, and heartbeat freshness for every known physical address. `Peer::getAppropriatePath()` selects the best current path using preference ranks that favour private-scope over global addresses, and IPv6 over IPv4 within the same scope.
+  </Step>
+</Steps>
+
+If a direct path cannot be established, packets are relayed through a root or through a per-network relay specialist. Relayed traffic is slower but fully encrypted — ZeroTier Inc. cannot read the content.
+
+### Cipher Suites
+
+The current protocol version (13, as of 1.16.0) supports three cipher suites:
+
+| Suite | Usage |
+|-------|-------|
+| `C25519_POLY1305_NONE` | MAC-only (Poly1305 over Salsa20/12 keystream). Used for initial HELLO in legacy mode. |
+| `C25519_POLY1305_SALSA20/12` | Authenticated encryption. Standard peer traffic. |
+| `AES-GMAC-SIV` | Faster AES-based authenticated encryption. Used when both peers support protocol v12+. |
+
+Protocol v13 (1.16.0+) adds **ephemeral keying with a second encryption pass** (`ZT_PROTO_FLAG_EXTENDED_ARMOR`) and **encrypted HELLO packets** sent to all peers except roots, so even the key-exchange handshake is hidden from observers.
+
+---
+
+## VL2 — Virtual Ethernet
+
+VL2 sits on top of VL1 and turns authenticated peer links into a virtual LAN. It handles everything a real Ethernet switch would: frame switching, access control, multicast, bridging, and IP address management.
+
+### Virtual Networks and Network IDs
+
+Each virtual LAN is identified by a **16-digit hex network ID** (e.g. `8056c2e21c000001`). The first 10 digits of the network ID are the ZeroTier address of the network's **controller** — the node responsible for issuing network configurations and authorizing members:
+
+```
+8056c2e21c 000001
+^^^^^^^^^^ ^^^^^^
+controller  unique
+ address    suffix
+```
+
+This encoding is implemented in `Network::controllerFor()` (`node/Network.hpp:58-61`):
+
+```cpp
+static inline Address controllerFor(uint64_t nwid)
+{
+    return Address(nwid >> 24);
+}
+```
+
+### The Network Controller
+
+The network controller is ZeroTier's equivalent of a certificate authority and DHCP server combined. When a node joins a network it sends a `NETWORK_CONFIG_REQUEST` to the controller. The controller responds with a signed `NetworkConfig` object (`node/NetworkConfig.hpp`) that includes:
+
+- Network type (public or private)
+- Certificate of Membership (COM) — the node's authorization credential
+- Statically assigned IP addresses (up to 32 per member)
+- Pushed routes (up to 128)
+- Flow rules (up to 1024 base rules)
+- Tags and capabilities for micro-segmentation
+
+The controller can be a ZeroTier Central-managed cloud controller, or a self-hosted controller running alongside any ZeroTier node.
+
+### Ethernet Frame Switching
+
+When an application sends an Ethernet frame into a ZeroTier virtual network interface:
+
+<Steps>
+  <Step title="Outbound filter">
+    `Network::filterOutgoingPacket()` evaluates the frame against the network's rule table. Rules can match on EtherType, IP protocol, TCP flags, VLAN ID, source/destination MAC and IP, and certificate-of-ownership flags. The frame is accepted, dropped, TEE'd (copied to another address), or redirected.
+  </Step>
+  <Step title="Destination resolution">
+    The VL2 switch looks up the destination MAC address. If the destination is known, the frame is sent directly to that ZeroTier peer. If not, multicast/broadcast is used.
+  </Step>
+  <Step title="VL1 encapsulation">
+    The frame is handed to VL1 (`Node::putFrame()` → `putPacket()`), which encrypts and authenticates it using the pre-agreed symmetric key for the destination peer, then delivers it over UDP.
+  </Step>
+  <Step title="Inbound filter">
+    On the receiving side, `Network::filterIncomingPacket()` re-evaluates the frame. Both the sender's and the receiver's rule tables are applied. The frame is delivered to the OS network interface only if both pass.
+  </Step>
+</Steps>
+
+### Multicast and Broadcast
+
+ZeroTier emulates Ethernet multicast. Each node advertises its multicast group subscriptions to the network. The controller or a designated multicast replicator specialist distributes multicast frames. Broadcast (`ff:ff:ff:ff:ff:ff`) is supported when the `ZT_NETWORKCONFIG_FLAG_ENABLE_BROADCAST` flag is set in the network config.
+
+### Bridging
+
+Nodes designated as **active bridges** (`ZT_NETWORKCONFIG_SPECIALIST_TYPE_ACTIVE_BRIDGE`) can bridge ZeroTier networks to physical Ethernet segments. The switch tracks remote MAC addresses learned through bridges in `Network::_remoteBridgeRoutes` and forwards unknown-destination frames to active bridges.
+
+---
+
+## Packet Flow: End to End
+
+The following traces a single frame from sender to receiver across a private network with direct peering established:
+
+```
+Application (sender)
+  │  Ethernet frame
+  ▼
+ZeroTier TAP interface
+  │  VL2: outbound filter (rules, capabilities, tags)
+  │  VL2: resolve destination ZeroTier address from MAC
+  ▼
+Node::processVirtualNetworkFrame()
+  │  Encrypt + MAC frame using peer's symmetric key
+  │  Select best physical path (Path::preferenceRank)
+  ▼
+UDP socket → Internet → UDP socket
+  ▼
+Node::processWirePacket()
+  │  Authenticate + decrypt
+  │  Verify Certificate of Membership
+  ▼
+VL2: inbound filter (rules, capabilities, tags)
+  ▼
+Node::putFrame() → TAP interface
+  ▼
+Application (receiver)
+```
+
+If the peers do not yet have a direct path, the packet first travels through a root or relay. ZeroTier simultaneously attempts to establish a direct connection; once a direct path is confirmed, subsequent packets bypass the relay entirely.
+
+---
+
+## Summary
+
+<CardGroup cols={2}>
+  <Card title="VL1 guarantees" icon="shield-check">
+    Authenticated identity, end-to-end encryption, NAT traversal, and direct peer connections — without requiring any server in the data path once peering is established.
+  </Card>
+  <Card title="VL2 guarantees" icon="diagram-project">
+    Virtual Ethernet semantics, per-member authorization, IP assignment, route management, and fine-grained flow rules — all delivered by a controller that the network owner controls.
+  </Card>
+</CardGroup>

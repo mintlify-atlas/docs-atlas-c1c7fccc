@@ -1,0 +1,357 @@
+---
+title: "Controller networks"
+description: "Create, configure, and manage virtual networks on a self-hosted ZeroTier controller."
+---
+
+A ZeroTier virtual network is a managed Ethernet segment. The controller assigns IP addresses, pushes routes and DNS configuration to members, and enforces flow rules. This page documents the network management endpoints exposed by the embedded controller.
+
+For an overview of the controller API — including authentication, data storage, and type-sensitivity rules — see [Controller API overview](/api/controller-overview).
+
+## GET /controller
+
+Returns the current status of the controller, including whether its database is ready to serve requests.
+
+```bash
+curl -H "X-ZT1-Auth: $(sudo cat /var/lib/zerotier-one/authtoken.secret)" \
+  http://127.0.0.1:9993/controller
+```
+
+```json
+{
+  "controller": true,
+  "apiVersion": 4,
+  "clock": 1712345678901,
+  "databaseReady": true
+}
+```
+
+<ResponseField name="controller" type="boolean">
+  Always `true`. Confirms that the controller microservice is present and responding.
+</ResponseField>
+
+<ResponseField name="apiVersion" type="integer">
+  Controller API version. Currently `4`.
+</ResponseField>
+
+<ResponseField name="clock" type="integer">
+  Current controller system time in milliseconds since the Unix epoch.
+</ResponseField>
+
+<ResponseField name="databaseReady" type="boolean">
+  `true` when the database (filesystem or PostgreSQL) is initialized and ready. A `false` value here will also cause the endpoint to return HTTP 503.
+</ResponseField>
+
+---
+
+## GET /controller/network
+
+Returns an array of all 16-digit hex network IDs managed by this controller.
+
+```bash
+curl -H "X-ZT1-Auth: $(sudo cat /var/lib/zerotier-one/authtoken.secret)" \
+  http://127.0.0.1:9993/controller/network
+```
+
+```json
+["deadbeef12a1b2c3", "deadbeef12d4e5f6"]
+```
+
+The array contains only networks whose prefix matches the controller's own ZeroTier address. Networks in the database with a mismatched prefix are not active and will not be served to members.
+
+---
+
+## POST /controller/network
+
+Creates a new network with an automatically assigned ID. The controller selects a random 6-hex-digit suffix and prepends its own 10-digit ZeroTier address to form a unique 16-digit network ID.
+
+```bash
+curl -X POST \
+  -H "X-ZT1-Auth: $(sudo cat /var/lib/zerotier-one/authtoken.secret)" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "my-network", "private": true}' \
+  http://127.0.0.1:9993/controller/network
+```
+
+The response is the full network configuration object for the newly created network (same as `GET /controller/network/<id>`).
+
+<Note>
+  You can also POST to `/controller/network/<controller-address>______` (10-digit controller address followed by exactly six underscore characters) to trigger automatic ID assignment using the legacy path format.
+</Note>
+
+---
+
+## GET /controller/network/\<network-id\>
+
+Returns the full configuration object for a single network.
+
+```bash
+curl -H "X-ZT1-Auth: $(sudo cat /var/lib/zerotier-one/authtoken.secret)" \
+  http://127.0.0.1:9993/controller/network/deadbeef12a1b2c3
+```
+
+Returns `404` if the network does not exist.
+
+---
+
+## POST /controller/network/\<network-id\>
+
+Creates or updates a network's configuration. You only need to include the fields you want to change — omitted fields retain their current values. The full updated configuration object is returned.
+
+### Request body
+
+<ParamField body="name" type="string">
+  A short human-readable name for the network. Shown in `zerotier-cli listnetworks` output on member nodes.
+</ParamField>
+
+<ParamField body="private" type="boolean" default="true">
+  When `true`, devices must be explicitly authorized by the controller before they can communicate on the network. When `false`, any device that knows the network ID is automatically allowed to join — use with caution.
+</ParamField>
+
+<ParamField body="enableBroadcast" type="boolean" default="true">
+  Allow Ethernet broadcast frames (`ff:ff:ff:ff:ff:ff`) to be sent across the network. Required for protocols like ARP (IPv4) and some discovery protocols. Disable to reduce broadcast traffic on large networks.
+</ParamField>
+
+<ParamField body="multicastLimit" type="integer" default="32">
+  Maximum number of recipients for a multicast or broadcast frame. Frames addressed to more recipients than this limit are dropped. Raising this value increases traffic on large networks.
+</ParamField>
+
+<ParamField body="mtu" type="integer" default="2800">
+  Ethernet MTU for the virtual network interface, in bytes. Clamped between the ZeroTier minimum (1280) and maximum (10000) MTU values. The default of 2800 accommodates ZeroTier's encapsulation overhead over standard 1500-byte Internet paths.
+</ParamField>
+
+<ParamField body="routes" type="object[]">
+  Managed routes to push to all authorized members. Each entry defines a destination network and an optional gateway.
+
+  <Expandable title="route object properties">
+    <ParamField body="target" type="string" required>
+      Destination network in CIDR notation, e.g. `"10.147.20.0/24"` or `"fd00::/8"`.
+    </ParamField>
+    <ParamField body="via" type="string">
+      Gateway IP address (next hop). If omitted or `null`, the route is treated as a directly connected local network on the ZeroTier interface. This is the typical setting when the target is the network's own managed subnet.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="ipAssignmentPools" type="object[]">
+  IP address ranges from which the controller automatically assigns addresses to members. Auto-assignment only works when the corresponding assign mode (`v4AssignMode.zt` or `v6AssignMode.zt`) is enabled and the range falls within a route listed in `routes`.
+
+  <Expandable title="pool object properties">
+    <ParamField body="ipRangeStart" type="string" required>
+      First IP address in the range (inclusive), e.g. `"10.147.20.1"`.
+    </ParamField>
+    <ParamField body="ipRangeEnd" type="string" required>
+      Last IP address in the range (inclusive), e.g. `"10.147.20.254"`. Must be the same address family as `ipRangeStart`.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="v4AssignMode" type="object">
+  Controls automatic IPv4 address assignment behavior.
+
+  <Expandable title="v4AssignMode properties">
+    <ParamField body="zt" type="boolean" default="false">
+      When `true`, the controller automatically assigns an IPv4 address from `ipAssignmentPools` to each new authorized member, provided the pool range falls within a managed route. Addresses are selected starting from the low bits of the member's ZeroTier address to reduce collisions.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="v6AssignMode" type="object">
+  Controls automatic IPv6 address assignment behavior. Multiple modes can be enabled simultaneously.
+
+  <Expandable title="v6AssignMode properties">
+    <ParamField body="zt" type="boolean" default="false">
+      Assign an IPv6 address from `ipAssignmentPools`, following the same pool-based logic as the IPv4 mode.
+    </ParamField>
+    <ParamField body="rfc4193" type="boolean" default="false">
+      Assign a deterministic RFC 4193 private IPv6 address derived from the network ID and the member's ZeroTier address. Enables NDP emulation so members can reach each other without needing a router.
+    </ParamField>
+    <ParamField body="6plane" type="boolean" default="false">
+      Assign a 6PLANE address — a /80 routed prefix per member, allowing each device to act as a subnet router within the ZeroTier network. Also enables NDP emulation.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="rules" type="object[]">
+  Flow rules applied to all traffic on the network. Rules are evaluated in order; the first matching action terminates evaluation. An empty `rules` array allows all traffic. Each rule object contains a `type` field and type-specific parameters.
+
+  Common action types: `ACTION_ACCEPT`, `ACTION_DROP`, `ACTION_REDIRECT`, `ACTION_TEE`.
+
+  Common match types: `MATCH_SOURCE_ZEROTIER_ADDRESS`, `MATCH_DEST_ZEROTIER_ADDRESS`, `MATCH_ETHERTYPE`, `MATCH_IPV4_SOURCE`, `MATCH_IPV4_DEST`, `MATCH_IPV6_SOURCE`, `MATCH_IPV6_DEST`, `MATCH_IP_PROTOCOL`, `MATCH_IP_SOURCE_PORT_RANGE`, `MATCH_IP_DEST_PORT_RANGE`.
+
+  Each match type also accepts `"not": true` to negate the match, and `"or": true` to OR it with the previous condition (default is AND).
+
+  <Tip>
+    Rules are enforced bidirectionally. A rule that drops traffic from address A to address B will also drop traffic from B to A if evaluated on the receiving side.
+  </Tip>
+</ParamField>
+
+<ParamField body="capabilities" type="object[]">
+  Named capability sets, each containing a list of flow rules. Members can be granted specific capability IDs, which extend their traffic permissions beyond what the base network rules allow. Capabilities are signed by the controller and cannot be forged by members.
+
+  <Expandable title="capability object properties">
+    <ParamField body="id" type="integer" required>
+      Unique numeric identifier for this capability.
+    </ParamField>
+    <ParamField body="default" type="boolean" default="false">
+      When `true`, new members automatically receive this capability on their first join.
+    </ParamField>
+    <ParamField body="rules" type="object[]">
+      Flow rules granted to members holding this capability. Same format as the top-level `rules` array.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="tags" type="object[]">
+  Tag definitions used in flow rules for policy-based access control. Tags are integer key-value pairs assigned per member. Rules can match on tag values using conditions like `MATCH_TAGS_EQUAL` and `MATCH_TAGS_DIFFERENCE`.
+
+  <Expandable title="tag object properties">
+    <ParamField body="id" type="integer" required>
+      Unique numeric identifier for this tag.
+    </ParamField>
+    <ParamField body="default" type="integer">
+      Default tag value assigned to members that have not been explicitly given a value for this tag. Set to `null` for no default.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="dns" type="object">
+  DNS configuration pushed to all authorized members. Requires `allowDNS: true` on the member node side.
+
+  <Expandable title="dns object properties">
+    <ParamField body="domain" type="string" required>
+      DNS search domain for the virtual network, e.g. `"zt.example.com"`.
+    </ParamField>
+    <ParamField body="servers" type="string[]" required>
+      Array of DNS server IP addresses (up to the ZeroTier-configured maximum). These should be IP addresses reachable over the ZeroTier network.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+### Example: create a private network with auto IP assignment
+
+This example creates a private network named `"homelab"` with:
+- Auto IPv4 assignment from the `10.10.0.0/16` subnet
+- A managed route covering that subnet
+- Broadcast enabled
+
+<CodeGroup>
+
+```bash Create network
+curl -X POST \
+  -H "X-ZT1-Auth: $(sudo cat /var/lib/zerotier-one/authtoken.secret)" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "homelab",
+    "private": true,
+    "enableBroadcast": true,
+    "v4AssignMode": { "zt": true },
+    "routes": [
+      { "target": "10.10.0.0/16", "via": null }
+    ],
+    "ipAssignmentPools": [
+      { "ipRangeStart": "10.10.0.1", "ipRangeEnd": "10.10.255.254" }
+    ]
+  }' \
+  http://127.0.0.1:9993/controller/network
+```
+
+```bash Update an existing network
+NETWORK_ID="deadbeef12a1b2c3"
+curl -X POST \
+  -H "X-ZT1-Auth: $(sudo cat /var/lib/zerotier-one/authtoken.secret)" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "homelab-updated", "multicastLimit": 64}' \
+  http://127.0.0.1:9993/controller/network/$NETWORK_ID
+```
+
+</CodeGroup>
+
+### Response
+
+The response body is the full network configuration object, including read-only fields set by the controller.
+
+<ResponseField name="id" type="string">
+  16-digit hex network ID.
+</ResponseField>
+
+<ResponseField name="nwid" type="string">
+  Same as `id`. Legacy field retained for compatibility.
+</ResponseField>
+
+<ResponseField name="name" type="string">
+  Human-readable name.
+</ResponseField>
+
+<ResponseField name="private" type="boolean">
+  Whether the network requires member authorization.
+</ResponseField>
+
+<ResponseField name="enableBroadcast" type="boolean">
+  Whether Ethernet broadcast is permitted.
+</ResponseField>
+
+<ResponseField name="multicastLimit" type="integer">
+  Maximum multicast/broadcast recipients.
+</ResponseField>
+
+<ResponseField name="mtu" type="integer">
+  Ethernet MTU for the virtual interface.
+</ResponseField>
+
+<ResponseField name="routes" type="object[]">
+  Managed routes pushed to members.
+</ResponseField>
+
+<ResponseField name="ipAssignmentPools" type="object[]">
+  IP ranges used for automatic address assignment.
+</ResponseField>
+
+<ResponseField name="v4AssignMode" type="object">
+  IPv4 auto-assignment configuration.
+</ResponseField>
+
+<ResponseField name="v6AssignMode" type="object">
+  IPv6 auto-assignment configuration.
+</ResponseField>
+
+<ResponseField name="rules" type="object[]">
+  Network flow rules.
+</ResponseField>
+
+<ResponseField name="capabilities" type="object[]">
+  Defined capability sets.
+</ResponseField>
+
+<ResponseField name="tags" type="object[]">
+  Defined tag types.
+</ResponseField>
+
+<ResponseField name="dns" type="object">
+  DNS configuration pushed to members.
+</ResponseField>
+
+<ResponseField name="revision" type="integer">
+  Monotonically increasing revision counter. Incremented on every configuration change. Members use this to detect when they need to re-fetch their network config.
+</ResponseField>
+
+<ResponseField name="objtype" type="string">
+  Always `"network"`. Used internally by the database.
+</ResponseField>
+
+---
+
+## DELETE /controller/network/\<network-id\>
+
+Permanently deletes a network and all of its stored member records. The response body is the network object as it existed immediately before deletion.
+
+```bash
+curl -X DELETE \
+  -H "X-ZT1-Auth: $(sudo cat /var/lib/zerotier-one/authtoken.secret)" \
+  http://127.0.0.1:9993/controller/network/deadbeef12a1b2c3
+```
+
+Returns `404` if the network does not exist.
+
+<Warning>
+  Deleting a network cannot be undone. Any devices that were members of the network will lose access immediately and will not be able to rejoin. Their local `controller.d/` data is also removed from disk.
+</Warning>

@@ -1,0 +1,74 @@
+---
+title: "Welcome to ZeroTier"
+description: "A smart programmable Ethernet switch for the planet — connect devices, VMs, and containers into secure peer-to-peer virtual networks from anywhere."
+---
+
+ZeroTier lets you build secure, encrypted virtual networks that span the globe. Whether you're connecting remote servers, building a SD-WAN, or linking IoT devices, ZeroTier makes your distributed infrastructure behave like a single local network.
+
+<CardGroup cols={2}>
+  <Card title="Quick Start" icon="rocket" href="/quickstart">
+    Get connected to a ZeroTier network in under five minutes
+  </Card>
+  <Card title="Installation" icon="download" href="/installation">
+    Install ZeroTier on Linux, macOS, Windows, FreeBSD, and more
+  </Card>
+  <Card title="Core Concepts" icon="lightbulb" href="/concepts/architecture">
+    Understand VL1, VL2, identities, and how ZeroTier works
+  </Card>
+  <Card title="API Reference" icon="code" href="/api/overview">
+    Control ZeroTier programmatically via the local JSON API
+  </Card>
+</CardGroup>
+
+## What is ZeroTier?
+
+ZeroTier is a **smart programmable Ethernet switch for the planet**. It combines two layers:
+
+- **VL1** — A cryptographically addressed peer-to-peer network. Every device gets a unique 10-digit ZeroTier address derived from its public key. Peers connect directly to each other across any underlying network topology, with automatic NAT traversal.
+- **VL2** — An Ethernet emulation layer similar to VXLAN, built on top of VL1. It provides virtual switches, fine-grained access control rules, IP address management, and multicast.
+
+All ZeroTier traffic is **end-to-end encrypted** using secret keys that only you control. Most traffic flows peer-to-peer without touching ZeroTier's servers. A free relay service handles fallback cases where direct peer connections cannot be established.
+
+## Key capabilities
+
+<CardGroup cols={2}>
+  <Card title="Peer-to-peer networking" icon="network-wired">
+    Direct encrypted connections between any two devices, across NATs and firewalls, without a central VPN gateway
+  </Card>
+  <Card title="Virtual Ethernet" icon="ethernet">
+    Full Layer 2 emulation — multicast, broadcast, and any Ethernet protocol work across your virtual network
+  </Card>
+  <Card title="Access control rules" icon="shield-halved">
+    Fine-grained SDN-style flow rules for network micro-segmentation and security monitoring
+  </Card>
+  <Card title="Multipath bonding" icon="link">
+    Bond multiple physical links with active-backup, round-robin, or adaptive load balancing policies
+  </Card>
+  <Card title="Self-hosted controller" icon="server">
+    Run your own network controller for full ownership of your infrastructure
+  </Card>
+  <Card title="Cross-platform" icon="laptop">
+    Linux, macOS, Windows, FreeBSD, OpenBSD — plus iOS and Android mobile apps
+  </Card>
+</CardGroup>
+
+## Getting started
+
+<Steps>
+  <Step title="Install ZeroTier">
+    Download and install the ZeroTier One service on your device. See the [installation guide](/installation) for platform-specific instructions.
+  </Step>
+  <Step title="Create or join a network">
+    Create a free network at [my.zerotier.com](https://my.zerotier.com) or join an existing one with its 16-digit network ID.
+  </Step>
+  <Step title="Authorize your device">
+    Your device appears in the network's member list. Authorize it (for private networks) and it receives an IP address.
+  </Step>
+  <Step title="Connect">
+    All authorized devices on the network can communicate as if on the same LAN — regardless of physical location.
+  </Step>
+</Steps>
+
+<Tip>
+  For a hands-on walkthrough, see the [Quick Start guide](/quickstart) which takes you from installation to a working connection in minutes.
+</Tip>

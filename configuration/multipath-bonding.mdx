@@ -1,0 +1,287 @@
+---
+title: "Multipath bonding"
+description: "Bond multiple physical network interfaces for redundancy and load balancing with ZeroTier's multipath feature."
+---
+
+ZeroTier's multipath bonding lets a single peer-to-peer link span multiple physical network interfaces simultaneously. Instead of picking one path and sticking with it, ZeroTier can distribute traffic across several interfaces—for example an Ethernet port and a Wi-Fi card, or two separate ISP uplinks—and fail over instantly if one goes down.
+
+## When to use multipath
+
+Multipath bonding is most useful when:
+
+- You need **high availability** and cannot tolerate even brief connectivity interruptions
+- You have **multiple ISPs** or uplinks and want to use all of them at once
+- You want **increased throughput** by striping traffic across several interfaces
+- You are building **edge or IoT deployments** on cellular + wired dual-homed hardware
+
+<Note>
+  Multipath bonding operates at the ZeroTier VL1 layer and is independent of the virtual networks you have joined. It affects the physical paths used to reach each peer, not the virtual network topology.
+</Note>
+
+<Warning>
+  Enabling any bonding policy automatically disables TCP fallback relay. Ensure that at least one bonded path can reach the ZeroTier root servers over UDP before enabling bonding.
+</Warning>
+
+---
+
+## Bonding policies
+
+ZeroTier supports six bonding policies. The policy is set per-bond (or globally as a default) in `local.conf`.
+
+<AccordionGroup>
+  <Accordion title="none (default)">
+    **Policy name:** `none`
+
+    Standard ZeroTier operation with no bonding. ZeroTier picks the single best available path to each peer using its normal path selection heuristics. This is the default if no bonding configuration is present.
+  </Accordion>
+
+  <Accordion title="active-backup">
+    **Policy name:** `active-backup`
+
+    Traffic is sent over exactly one designated primary link at a time. If that link fails, ZeroTier immediately switches to the next best available link from the failover queue. When the primary comes back up, behavior depends on the configured `linkSelectMethod`.
+
+    This policy provides **redundancy without load balancing**. Throughput is limited to the capacity of the single active link, but failover is near-instantaneous.
+
+    Best for: reliability-critical connections where simplicity matters and throughput does not need to scale beyond a single link.
+  </Accordion>
+
+  <Accordion title="broadcast">
+    **Policy name:** `broadcast`
+
+    Every outgoing packet is transmitted simultaneously on **all** active paths. The remote peer receives multiple copies and discards duplicates.
+
+    This policy provides the highest possible redundancy—a packet is lost only if it is dropped on every path simultaneously—at the cost of multiplied bandwidth usage.
+
+    Best for: ultra-low-latency or ultra-high-reliability requirements (e.g. real-time control systems) where bandwidth consumption is acceptable.
+  </Accordion>
+
+  <Accordion title="balance-rr">
+    **Policy name:** `balance-rr`
+
+    Packets are distributed across all active paths in **round-robin** order, striping them evenly across links. The `packetsPerLink` parameter controls how many consecutive packets are sent on each link before rotating.
+
+    This policy increases aggregate throughput by using all links simultaneously, but can cause **out-of-order packet delivery**, which may hurt TCP performance. It works best with UDP-based or latency-tolerant traffic.
+
+    Best for: bulk UDP transfers, video streaming, or environments where the application layer handles reordering.
+  </Accordion>
+
+  <Accordion title="balance-xor">
+    **Policy name:** `balance-xor`
+
+    Traffic is divided into **flows** identified by source/destination port pairs. Each flow is consistently assigned to the same path using an XOR hash of the flow ID, so packets within a single flow always arrive in order.
+
+    This policy balances load across links while avoiding per-flow reordering, making it suitable for TCP workloads with multiple concurrent connections.
+
+    Best for: servers or gateways with many simultaneous TCP connections that want to spread load without reordering.
+  </Accordion>
+
+  <Accordion title="balance-aware">
+    **Policy name:** `balance-aware`
+
+    Flows are assigned to paths adaptively based on **measured path quality** (latency, jitter, packet loss, and packet error rate). Lower-quality paths receive fewer flows; flows are reallocated as path quality changes.
+
+    This is the most sophisticated policy. ZeroTier continuously exchanges QoS measurement packets (`VERB_QOS_MEASUREMENT`) and ACK packets (`VERB_ACK`) with the remote peer to keep quality estimates current.
+
+    Best for: heterogeneous links (e.g. fiber + LTE) where quality differs significantly and you want traffic automatically steered toward the best-performing paths.
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Link selection methods (`linkSelectMethod`)
+
+For `active-backup` bonds, `linkSelectMethod` controls how and when the primary link reclaims its active status after recovering from a failure.
+
+| Value | Behavior |
+|-------|----------|
+| `always` | Primary reclaims active status as soon as it comes back up (default when links are explicitly specified) |
+| `better` | Primary reclaims active status only if it comes back up **and** it is measurably better than the currently-active link |
+| `failure` | Primary reclaims active status **only** if the currently-active link fails (sticky failover) |
+| `optimize` | The active link can change at any time if a superior path is detected (default when no explicit failover guidance is given) |
+
+<Note>
+  The field was previously called `activeReselect`. The new name `linkSelectMethod` is preferred; `activeReselect` is deprecated as of version 1.16.0 and will produce a warning.
+</Note>
+
+---
+
+## Quality-of-service parameters
+
+When using `balance-aware`, you can tune how ZeroTier weighs each quality dimension when scoring paths. These are set in the `linkQuality` object of a custom policy.
+
+| Parameter | Description |
+|-----------|-------------|
+| `lat_max` | Maximum acceptable latency (ms). Paths above this are penalized. |
+| `lat_weight` | Weight given to latency when computing overall path score (0.0–1.0) |
+| `pdv_max` | Maximum acceptable packet delay variance / jitter (ms) |
+| `pdv_weight` | Weight given to PDV when scoring |
+| `plr_max` | Maximum acceptable packet loss ratio (0.0–1.0) |
+| `plr_weight` | Weight given to PLR when scoring |
+| `per_max` | Maximum acceptable packet error ratio (0.0–1.0, counts MAC/CRC failures) |
+| `per_weight` | Weight given to PER when scoring |
+
+All eight values must be present if `linkQuality` is specified at all. Weights should sum to 1.0 for predictable behavior, though ZeroTier does not enforce this.
+
+---
+
+## Link properties
+
+Each link in a custom bonding policy supports these per-interface settings:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `mode` | `"primary"` \| `"spare"` | Whether this interface is a primary link or a standby spare (spare links are only used when all primaries fail) |
+| `capacity` | integer | Relative throughput capacity of this link (arbitrary units). Used by `balance-aware` to distribute load proportionally. |
+| `ipvPref` | integer | IP version preference: `0` = no preference, `4` = IPv4 only, `6` = IPv6 only, `46` = prefer IPv4, `64` = prefer IPv6 |
+| `mtu` | integer | Override the UDP payload MTU for this link |
+| `failoverTo` | string | Name of the interface to fail over to if this link fails (primary mode only) |
+| `enabled` | boolean | Enable or disable this link within the bond |
+
+---
+
+## Configuring bonding in `local.conf`
+
+Bonding is configured inside the `settings` object of `local.conf`. The key fields are:
+
+- **`defaultBondingPolicy`** — the policy name to apply to all peers not given a specific policy
+- **`policies`** — named custom policy definitions that can override defaults or be assigned to specific peers
+- **`peerSpecificBonds`** — assigns a named policy to a specific peer address
+
+### Example: active-backup with two interfaces
+
+```json
+{
+  "settings": {
+    "defaultBondingPolicy": "my-active-backup",
+    "policies": {
+      "my-active-backup": {
+        "basePolicy": "active-backup",
+        "failoverInterval": 500,
+        "upDelay": 0,
+        "downDelay": 0,
+        "linkSelectMethod": "always",
+        "links": {
+          "eth0": {
+            "mode": "primary",
+            "ipvPref": 4,
+            "failoverTo": "wlan0"
+          },
+          "wlan0": {
+            "mode": "spare",
+            "ipvPref": 4
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+### Example: balance-aware with quality tuning
+
+```json
+{
+  "settings": {
+    "defaultBondingPolicy": "my-balance-aware",
+    "policies": {
+      "my-balance-aware": {
+        "basePolicy": "balance-aware",
+        "failoverInterval": 1000,
+        "linkQuality": {
+          "lat_max":    200,
+          "pdv_max":    50,
+          "plr_max":    0.01,
+          "per_max":    0.01,
+          "lat_weight": 0.4,
+          "pdv_weight": 0.3,
+          "plr_weight": 0.2,
+          "per_weight": 0.1
+        },
+        "links": {
+          "eth0": {
+            "mode": "primary",
+            "capacity": 1000,
+            "ipvPref": 4
+          },
+          "wwan0": {
+            "mode": "primary",
+            "capacity": 100,
+            "ipvPref": 4
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+### Example: assign a policy to a specific peer
+
+```json
+{
+  "settings": {
+    "policies": {
+      "critical-link": {
+        "basePolicy": "broadcast",
+        "links": {
+          "eth0": { "mode": "primary" },
+          "eth1": { "mode": "primary" }
+        }
+      }
+    },
+    "peerSpecificBonds": {
+      "deadbeef01": "critical-link"
+    }
+  }
+}
+```
+
+### Tuning failover timing
+
+<ParamField body="failoverInterval" type="integer" default="500">
+  Maximum time in milliseconds that a failover should take. ZeroTier sizes its monitoring intervals to meet this target. Smaller values result in faster failover but higher background traffic.
+</ParamField>
+
+<ParamField body="upDelay" type="integer" default="0">
+  Milliseconds to wait before admitting a newly-discovered or recovered path into the bond. Prevents flapping on unstable links.
+</ParamField>
+
+<ParamField body="downDelay" type="integer" default="0">
+  Milliseconds to wait before removing a newly-failed path from the bond. Provides hysteresis against momentary packet loss.
+</ParamField>
+
+<ParamField body="packetsPerLink" type="integer">
+  For `balance-rr` only: number of packets to send on each link before rotating to the next. Set to `0` for random per-packet selection.
+</ParamField>
+
+---
+
+## Monitoring bond state
+
+<Tabs>
+  <Tab title="CLI">
+    ```bash
+    # List all active bonds and their status
+    zerotier-cli bonds
+
+    # Show detailed bond info for a specific peer
+    zerotier-cli bond <peer-address> show
+
+    # Rotate to the next link in an active-backup bond
+    zerotier-cli bond <peer-address> rotate
+    ```
+  </Tab>
+  <Tab title="API">
+    ```bash
+    # List bonds
+    curl -s http://127.0.0.1:9993/bonds \
+      -H "X-ZT1-Auth: $(cat /var/lib/zerotier-one/authtoken.secret)"
+
+    # Get bond details for a specific peer
+    curl -s http://127.0.0.1:9993/bond/<peer-address> \
+      -H "X-ZT1-Auth: $(cat /var/lib/zerotier-one/authtoken.secret)"
+    ```
+  </Tab>
+</Tabs>
+
+The bond status includes live per-path statistics: `latency`, `latencyVariance`, `packetLossRatio`, `packetErrorRatio`, `relativeQuality`, `alive`, and `bonded` flags for each nominated path.

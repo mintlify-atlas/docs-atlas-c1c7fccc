@@ -1,0 +1,169 @@
+---
+title: "Controller API overview"
+description: "The ZeroTier network controller API for managing virtual networks and their members."
+---
+
+The ZeroTier network controller is a microservice that manages virtual networks: it admits members, issues certificates, and distributes network configuration to connected nodes. This reference controller implementation is nearly identical to the one that powers [my.zerotier.com](https://my.zerotier.com), differing only in its database backend.
+
+The controller API is mounted at `/controller` on the same local JSON API endpoint used by the ZeroTier One service (`http://127.0.0.1:9993` by default). No separate port or process is required.
+
+<Info>
+  The controller is included in the source tree under `nonfree/` and requires building with `ZT_NONFREE=1`. This changes the license from MPL to a commercial source-available license (see `nonfree/LICENSE.md`). As of 1.16.0, default binary builds from ZeroTier, Inc. no longer include the controller.
+</Info>
+
+## Building with the controller
+
+To compile ZeroTier One with the embedded network controller, pass the `ZT_NONFREE=1` flag to `make`:
+
+```bash
+make ZT_NONFREE=1
+```
+
+For setup and deployment instructions, see the [self-hosted controller guide](/deployment/self-hosted-controller).
+
+## Base path
+
+All controller endpoints are prefixed with `/controller`:
+
+```
+http://127.0.0.1:9993/controller
+```
+
+## Authentication
+
+The controller uses the same authentication mechanism as the rest of the service API. Every request must include the contents of `authtoken.secret` from the ZeroTier working directory.
+
+<Tabs>
+  <Tab title="HTTP header">
+    ```bash
+    curl -H "X-ZT1-Auth: $(sudo cat /var/lib/zerotier-one/authtoken.secret)" \
+      http://127.0.0.1:9993/controller
+    ```
+  </Tab>
+  <Tab title="Query parameter">
+    ```bash
+    TOKEN=$(sudo cat /var/lib/zerotier-one/authtoken.secret)
+    curl "http://127.0.0.1:9993/controller?auth=$TOKEN"
+    ```
+  </Tab>
+</Tabs>
+
+<Warning>
+  When using the `?auth=` query parameter, take care that request URLs are not being logged by any HTTP proxy or access log. Use the `X-ZT1-Auth` header in production environments.
+</Warning>
+
+<ParamField header="X-ZT1-Auth" type="string" required>
+  The contents of `authtoken.secret`. Grants full control over the controller. The file is located in the ZeroTier working directory (`/var/lib/zerotier-one/` on Linux).
+</ParamField>
+
+## Network IDs
+
+ZeroTier network IDs are 16 hexadecimal digits (64 bits). The **first 10 digits** of a network ID must match the 10-digit ZeroTier address of the controller node. The controller will only issue configurations for networks whose prefix matches its own address.
+
+```
+<controller-address><6-hex-digit-suffix>
+│                   │
+deadbeef12          a1b2c3        →  deadbeef12a1b2c3
+```
+
+To find your controller's address:
+
+```bash
+zerotier-cli info
+# 200 info deadbeef12 1.14.0 ONLINE
+```
+
+When creating a new network via POST to `/controller/network`, the controller automatically selects a random available suffix and prepends its own address, so you do not need to construct the ID manually.
+
+## Type sensitivity
+
+<Warning>
+  The controller JSON API is strict about types. Integers must be integers (not quoted strings), booleans must be `true` or `false` (not `1`/`0` or `"true"`), and arrays must be arrays. Incorrect types are silently ignored or reset to default values, which can lead to confusing behavior.
+</Warning>
+
+| Value | Correct | Incorrect |
+| ----- | ------- | --------- |
+| Integer | `32` | `"32"` or `32.0` |
+| Boolean | `true` | `"true"` or `1` |
+| String | `"mynet"` | `mynet` |
+
+Unrecognized fields in JSON bodies are silently ignored.
+
+## Data storage
+
+Controller data is persisted as JSON files on the local filesystem under `controller.d/` in the ZeroTier working directory:
+
+```
+/var/lib/zerotier-one/
+└── controller.d/
+    └── network/
+        ├── deadbeef12a1b2c3.json          # network config
+        └── deadbeef12a1b2c3/
+            └── member/
+                └── aabbccdd11.json        # member config
+```
+
+<Warning>
+  Do not edit files in `controller.d/` while the controller is running. Doing so may result in data loss. If you edit files directly (when the controller is stopped), ensure the JSON is valid before restarting — corrupt JSON can also cause data loss on restart. Always prefer the API.
+</Warning>
+
+You can safely copy, rsync, or version-control the `controller.d/` directory. This makes replication and backup straightforward.
+
+## Available endpoints
+
+<CardGroup cols={2}>
+  <Card title="Networks" icon="network-wired" href="/api/controller-networks">
+    Create, configure, and delete virtual networks managed by this controller.
+  </Card>
+  <Card title="Members" icon="users" href="/api/controller-members">
+    Authorize devices and assign IP addresses on your networks.
+  </Card>
+</CardGroup>
+
+### Endpoint summary
+
+| Method | Path | Description |
+| ------ | ---- | ----------- |
+| `GET` | `/controller` | Controller status and API version |
+| `GET` | `/controller/network` | List all network IDs |
+| `POST` | `/controller/network` | Create a new network (auto-assigned ID) |
+| `GET` | `/controller/network/<id>` | Get network configuration |
+| `POST` | `/controller/network/<id>` | Update network configuration |
+| `DELETE` | `/controller/network/<id>` | Delete a network |
+| `GET` | `/controller/network/<id>/member` | List all members of a network |
+| `GET` | `/controller/network/<id>/member/<address>` | Get a single member's configuration |
+| `POST` | `/controller/network/<id>/member/<address>` | Authorize or configure a member |
+| `DELETE` | `/controller/network/<id>/member/<address>` | Remove a member from a network |
+
+## Prometheus metrics
+
+The controller exposes operational metrics at the `/metrics` endpoint alongside the standard service metrics.
+
+| Metric | Type | Description |
+| ------ | ---- | ----------- |
+| `controller_network_count` | Gauge | Number of networks the controller is serving |
+| `controller_member_count` | Gauge | Number of network members the controller is serving |
+| `controller_network_change_count` | Counter | Number of network configuration changes |
+| `controller_member_change_count` | Counter | Number of member configuration changes |
+| `controller_member_auth_count` | Counter | Number of member authorizations |
+| `controller_member_deauth_count` | Counter | Number of member deauthorizations |
+
+Enable metrics collection in `local.conf`:
+
+```json
+{
+  "settings": {
+    "enableMetrics": true
+  }
+}
+```
+
+## Scalability
+
+A single controller can theoretically host up to 2^24 networks and serve millions of devices. For large deployments, ZeroTier recommends spreading networks across multiple controllers for load balancing and fault tolerance.
+
+Because ZeroTier nodes are mobile and require no static IPs, high-availability failover is straightforward: replicate the `controller.d/` working directory from a primary to a backup host, and bring up the backup if the primary goes offline. Tools like Nomad or Kubernetes can automate this.
+
+<Tip>
+  Controllers can run inside Docker or other containers without elevated privileges. You do not need `--device=/dev/net/tun` or `--privileged` because a containerized controller does not need to join any ZeroTier network itself. Map port 9993/UDP and expose the local API port as needed.
+</Tip>

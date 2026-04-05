@@ -1,0 +1,243 @@
+---
+title: "zerotier-cli"
+description: "Command line interface for controlling the local ZeroTier service."
+---
+
+`zerotier-cli` is a thin command line wrapper around the local ZeroTier JSON API. It reads the API port from `zerotier-one.port` and the auth token from `authtoken.secret` in the service's working directory, then makes HTTP requests on your behalf.
+
+## Synopsis
+
+```bash
+zerotier-cli [-switches] <command> [arguments]
+```
+
+## Global switches
+
+| Switch | Description |
+|---|---|
+| `-j` | Output raw JSON instead of the formatted table. Useful for scripting and contains additional fields not shown in tabular output. |
+| `-D<path>` | Use `<path>` as the ZeroTier working directory instead of the platform default. Reads `zerotier-one.port` and `authtoken.secret` from that directory. |
+| `-p<port>` | Connect to the service on `<port>` instead of reading the port from `zerotier-one.port`. |
+| `-t<token>` | Use `<token>` as the API auth token instead of reading `authtoken.secret`. |
+
+## Running without root
+
+By default, `zerotier-cli` must run as root because `authtoken.secret` is owned by root. To allow a regular user to run it, copy the token into their home directory:
+
+<Steps>
+  <Step title="Copy the auth token">
+    ```bash
+    sudo cp /var/lib/zerotier-one/authtoken.secret /home/alice/.zeroTierOneAuthToken
+    ```
+    Adjust the path if your working directory is in a non-default location (see [`zerotier-one`](/cli/zerotier-one) for platform defaults).
+  </Step>
+  <Step title="Set ownership and permissions">
+    ```bash
+    sudo chown alice /home/alice/.zeroTierOneAuthToken
+    sudo chmod 0600 /home/alice/.zeroTierOneAuthToken
+    ```
+  </Step>
+  <Step title="Verify access">
+    ```bash
+    zerotier-cli info
+    ```
+    You should see your node address and status without `sudo`.
+  </Step>
+</Steps>
+
+<Warning>
+  Giving a user access to `authtoken.secret` lets them join or leave any ZeroTier network. This is a significant permission — treat it like sudo access to the network interface layer.
+</Warning>
+
+## Commands
+
+### `help`
+
+Display `zerotier-cli` usage and available commands.
+
+```bash
+zerotier-cli help
+```
+
+---
+
+### `info`
+
+Show this node's 10-digit ZeroTier address, the service version, and its connection status (`ONLINE`, `OFFLINE`, or `TUNNELED`).
+
+```bash
+zerotier-cli info
+```
+
+```
+200 info deadbeef01 1.12.2 ONLINE
+```
+
+Use `-j` for the full JSON response including public identity and other details:
+
+```bash
+zerotier-cli -j info
+```
+
+---
+
+### `listpeers`
+
+List all VL1 peers the service has communicated with in approximately the last 30 minutes. This is not the same as listing members of your networks — peers here include root servers, network controllers, and any other ZeroTier node you have recently spoken to.
+
+```bash
+zerotier-cli listpeers
+```
+
+```
+200 listpeers <ztaddr> <path> <latency> <version> <role>
+200 listpeers deadbeef01 195.201.11.44/9993;9582 12 1.12.2 LEAF
+200 listpeers 62f865ae71 -                        -1 1.8.4  ROOT
+```
+
+Columns:
+
+| Column | Description |
+|---|---|
+| `<ztaddr>` | The peer's 10-digit ZeroTier address |
+| `<path>` | Active direct path (`ip/port;age-in-ms`) or `-` if relayed |
+| `<latency>` | Round-trip latency in milliseconds, or `-1` if unknown |
+| `<version>` | Peer's ZeroTier version |
+| `<role>` | `LEAF` (ordinary node), `ROOT` (root server), or `PLANET` |
+
+Use `-j` for additional detail including all known paths and version components.
+
+---
+
+### `peers`
+
+An alias for `listpeers` that additionally includes connectivity details. Use `-j` to see the full peer record including all known paths:
+
+```bash
+zerotier-cli -j peers
+```
+
+---
+
+### `listnetworks`
+
+List all networks this node has joined, along with their status and any ZeroTier-managed IP addresses assigned by the controller.
+
+```bash
+zerotier-cli listnetworks
+```
+
+```
+200 listnetworks <nwid> <name> <mac> <status> <type> <dev> <ZT assigned ips>
+200 listnetworks 8056c2e21c000001 earth 7a:f3:8e:a2:b1:04 OK PUBLIC zt0 29.17.181.1/7
+```
+
+<Note>
+  IP addresses assigned manually to a ZeroTier interface (outside of the controller's IPAM) do not appear here. Use standard network interface commands (`ip addr`, `ifconfig`) to see those.
+</Note>
+
+---
+
+### `join <network-id>`
+
+Join a ZeroTier network by its 16-digit hex network ID. The service immediately contacts the network controller. For private networks, you will be placed in a pending state until the network administrator authorizes your node (visible by its 10-digit address from `zerotier-cli info`).
+
+```bash
+sudo zerotier-cli join 8056c2e21c000001
+```
+
+```
+200 join OK
+```
+
+After joining, check status with `listnetworks`. The `<status>` field will show `OK` once the controller has responded and (for private networks) authorized your node.
+
+---
+
+### `leave <network-id>`
+
+Disconnect from a network and remove its virtual interface from the system.
+
+```bash
+sudo zerotier-cli leave 8056c2e21c000001
+```
+
+```
+200 leave OK
+```
+
+<Note>
+  Peers you were communicating with may remain in `listpeers` output for up to 30 minutes until they time out. Once you share no networks with them, no meaningful communication is possible.
+</Note>
+
+---
+
+### `get <network-id> <setting>`
+
+Read a per-network local setting. Settings control how this node interacts with routes and DNS announced by the network controller, independently of what the controller itself allows.
+
+```bash
+zerotier-cli get 8056c2e21c000001 allowManaged
+```
+
+---
+
+### `set <network-id> <setting> <value>`
+
+Write a per-network local setting.
+
+```bash
+zerotier-cli set 8056c2e21c000001 allowManaged 1
+```
+
+Available settings:
+
+| Setting | Values | Description |
+|---|---|---|
+| `allowManaged` | `0` / `1` | Accept managed routes and IP addresses from the controller. Enabled by default. |
+| `allowGlobal` | `0` / `1` | Allow the controller to push routes to public IP space (non-RFC1918). Disabled by default. |
+| `allowDefault` | `0` / `1` | Allow the controller to push a default route (`0.0.0.0/0`), routing all internet traffic over ZeroTier. Disabled by default. |
+| `allowDNS` | `0` / `1` | Accept DNS server addresses and search domains from the controller. Disabled by default. |
+
+<Warning>
+  Setting `allowDefault` to `1` redirects all internet traffic through the ZeroTier network. Only enable this if you control and trust the network's controller, and have a working internet path on the ZeroTier side.
+</Warning>
+
+## Examples
+
+<CodeGroup>
+
+```bash Join the public "Earth" network
+sudo zerotier-cli join 8056c2e21c000001
+sudo zerotier-cli listnetworks
+# Wait until you see an IP address in the ZT assigned ips column
+ping earth.zerotier.net
+```
+
+```bash Leave a network
+sudo zerotier-cli leave 8056c2e21c000001
+```
+
+```bash Get your node address and status
+zerotier-cli info
+```
+
+```bash List peers with full JSON output
+zerotier-cli -j listpeers
+```
+
+```bash Control a non-default service instance
+zerotier-cli -D /var/lib/zerotier-one-test -p9994 listnetworks
+```
+
+```bash Allow controller-pushed default route
+sudo zerotier-cli set 8056c2e21c000001 allowDefault 1
+```
+
+</CodeGroup>
+
+## See also
+
+- [`zerotier-one`](/cli/zerotier-one) — the service daemon `zerotier-cli` controls
+- [`zerotier-idtool`](/cli/zerotier-idtool) — offline identity and key operations
+- [Service API reference](/api/overview) — the JSON API `zerotier-cli` wraps

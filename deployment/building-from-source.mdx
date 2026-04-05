@@ -1,0 +1,225 @@
+---
+title: "Building from source"
+description: "Build ZeroTier One from source on Linux, macOS, Windows, FreeBSD, and OpenBSD."
+---
+
+ZeroTier One can be built from source on Linux, macOS, Windows, FreeBSD, and OpenBSD. The build system uses GNU Make on Unix-like platforms and a Visual Studio solution on Windows.
+
+## Prerequisites
+
+Install the correct toolchain for your platform before building.
+
+<Tabs>
+  <Tab title="Linux">
+    **Compiler:** GCC/G++ 8.x or newer, or Clang/Clang++ 5.x or newer.
+
+    The Linux makefile automatically detects and prefers Clang when it is installed at `/usr/bin/clang`, as Clang typically produces smaller and slightly faster binaries. Override this by setting `CC` and `CXX` explicitly.
+
+    **Optional — Rust (for SSO support):** Rust toolchain targeting `x86_64` and `aarch64`. Required only if building with SSO enabled.
+
+    Install on Debian/Ubuntu:
+
+    ```bash
+    sudo apt-get install build-essential clang
+    ```
+
+    Install on RHEL/CentOS (GCC from devtoolset if the system GCC is older than 8.x):
+
+    ```bash
+    sudo yum install devtoolset-8 clang
+    scl enable devtoolset-8 bash
+    ```
+  </Tab>
+  <Tab title="macOS">
+    **Xcode command line tools** for macOS 10.13 or newer are required.
+
+    ```bash
+    xcode-select --install
+    ```
+
+    **Optional — Rust (for SSO support):** Rust toolchain with `x86_64-apple-darwin` and `aarch64-apple-darwin` targets. Required only if building with SSO enabled.
+  </Tab>
+  <Tab title="Windows">
+    **Visual Studio 2022** on Windows 10 or newer. The Community edition is sufficient.
+
+    Open the solution at `windows/ZeroTierOne.sln` in Visual Studio.
+
+    **Optional — Rust (for SSO support):** Rust toolchain with `x86_64-pc-windows-msvc` and `aarch64-pc-windows-msvc` targets.
+  </Tab>
+  <Tab title="FreeBSD">
+    **GNU make** and **binutils** are required. The system `make` is BSD make and will not work.
+
+    ```bash
+    pkg install gmake binutils
+    ```
+
+    **Optional — Rust (for SSO support):** Rust toolchain with `x86_64` and `aarch64` targets.
+  </Tab>
+  <Tab title="OpenBSD">
+    **GNU make** is required.
+
+    ```bash
+    pkg_add gmake
+    ```
+
+    **Optional — Rust (for SSO support):** Rust toolchain.
+
+    <Warning>
+      OpenBSD supports a maximum of **four simultaneous network memberships**. This is a kernel limitation — only four tap devices (`/dev/tap0` through `/dev/tap3`) are available.
+    </Warning>
+  </Tab>
+</Tabs>
+
+## Building
+
+<Tabs>
+  <Tab title="Linux / macOS">
+    ```bash
+    make
+    ```
+
+    This produces the `zerotier-one` binary in the current directory, plus `zerotier-cli` and `zerotier-idtool` symlinks.
+  </Tab>
+  <Tab title="FreeBSD / OpenBSD">
+    ```bash
+    gmake
+    ```
+  </Tab>
+  <Tab title="Windows">
+    Open `windows/ZeroTierOne.sln` in Visual Studio 2022 and build the solution (`Build > Build Solution`). The output binaries appear in `windows/ZeroTierOne/x64/Release/`.
+  </Tab>
+</Tabs>
+
+### Building with the network controller
+
+The network controller is part of the `nonfree/` source tree and is not compiled by default. Pass `ZT_NONFREE=1` to include it:
+
+```bash
+make ZT_NONFREE=1          # Linux / macOS
+gmake ZT_NONFREE=1         # FreeBSD / OpenBSD
+```
+
+<Warning>
+  Building with `ZT_NONFREE=1` changes the license of the resulting binary from MPL to a proprietary commercial source-available license. Review `nonfree/LICENSE.md` before distributing. See [self-hosted controller](/deployment/self-hosted-controller) for controller usage details.
+</Warning>
+
+### Build variables
+
+Pass these as `make` arguments to override defaults:
+
+| Variable | Description |
+|----------|-------------|
+| `ZT_NONFREE=1` | Include the nonfree network controller. |
+| `CC=<compiler>` | Override the C compiler (Linux). |
+| `CXX=<compiler>` | Override the C++ compiler (Linux). |
+
+## Running the self-test
+
+Before deploying on a new platform or architecture, run the self-test suite to validate crypto primitives, data structures, and environment assumptions:
+
+<Steps>
+  <Step title="Build the test binary">
+    ```bash
+    make selftest          # Linux / macOS
+    gmake selftest         # FreeBSD / OpenBSD
+    ```
+
+    This produces a `zerotier-selftest` binary alongside `zerotier-one`.
+  </Step>
+  <Step title="Run the tests">
+    ```bash
+    ./zerotier-selftest
+    ```
+
+    The binary runs through internal unit tests and prints a summary. All tests should pass before deploying the build.
+  </Step>
+</Steps>
+
+## Running the built binary
+
+Start `zerotier-one` as a background daemon:
+
+```bash
+sudo ./zerotier-one -d
+```
+
+The service creates its home directory automatically on first run:
+
+| Platform | Home directory |
+|----------|---------------|
+| Linux | `/var/lib/zerotier-one` |
+| FreeBSD / OpenBSD | `/var/db/zerotier-one` |
+| macOS | `/Library/Application Support/ZeroTier/One` |
+| Windows | `\ProgramData\ZeroTier\One` |
+
+The local control API listens on `127.0.0.1:9993`. Use `zerotier-cli` to interact with it:
+
+```bash
+zerotier-cli status
+zerotier-cli join <network-id>
+zerotier-cli listnetworks
+```
+
+Run `./zerotier-one -h` for a full list of command-line options.
+
+## CMake build (library only)
+
+The `CMakeLists.txt` in the repository root builds `libzerotiercore.a` — the core ZeroTier networking library — as a static archive. This is useful for embedding the ZeroTier engine into your own application.
+
+<Steps>
+  <Step title="Configure the build">
+    ```bash
+    mkdir build && cd build
+    cmake .. -DCMAKE_BUILD_TYPE=Release
+    ```
+  </Step>
+  <Step title="Build the library">
+    ```bash
+    cmake --build . --parallel
+    ```
+
+    The output is `build/libzerotiercore.a`.
+  </Step>
+</Steps>
+
+<Note>
+  The CMake build only produces the core library (`node/*.cpp`). It does not build `zerotier-one`, the service, OS-specific network tap code, or the controller. Use the `make` build for a complete executable.
+</Note>
+
+## Code formatting
+
+ZeroTier uses `clang-format` with a `.clang-format` definition in the repository root. Run the formatter across all core and service C++ files:
+
+```bash
+make clang-format
+```
+
+This runs `clang-format -i` over every `.cpp` and `.hpp` file under `node/`, `osdep/`, `service/`, `tcp-proxy/`, and `nonfree/controller/`. Added in version 1.16.0 as part of a full codebase reformat.
+
+## Directory structure
+
+Understanding the repository layout helps when modifying or extending the source:
+
+<AccordionGroup>
+  <Accordion title="node/">
+    Core ZeroTier networking code: the peer-to-peer VL1 layer, cryptographic identity management, packet handling, and the VL2 Ethernet emulation layer. Licensed under MPL-2.0.
+  </Accordion>
+  <Accordion title="osdep/">
+    Operating system-dependent code: platform-specific TUN/TAP drivers for Linux (`LinuxEthernetTap`), macOS, BSD, and Windows. Also contains the port mapper (`PortMapper.cpp`) and other OS integrations. Licensed under MPL-2.0.
+  </Accordion>
+  <Accordion title="service/">
+    The `zerotier-one` service implementation and local JSON API. Handles the HTTP control socket, `zerotier-cli` command parsing, and service lifecycle. Licensed under MPL-2.0.
+  </Accordion>
+  <Accordion title="nonfree/controller/">
+    The reference network controller implementation. Stores network and member configuration as JSON files under `controller.d/`. Licensed under a commercial source-available license. Requires `ZT_NONFREE=1` to compile.
+  </Accordion>
+  <Accordion title="ext/">
+    Bundled third-party libraries: miniupnpc, libnatpmp, prometheus-cpp-lite, and others. Each retains its original open-source license (MIT, BSD, Apache, or public domain).
+  </Accordion>
+  <Accordion title="windows/">
+    Visual Studio 2022 solution and project files for Windows builds.
+  </Accordion>
+  <Accordion title="rustybits/">
+    Rust components used for SSO/OIDC support. Only compiled when SSO is enabled in the build.
+  </Accordion>
+</AccordionGroup>

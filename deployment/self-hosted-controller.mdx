@@ -1,0 +1,265 @@
+---
+title: "Self-hosted controller"
+description: "Run your own ZeroTier network controller to manage virtual networks without relying on my.zerotier.com."
+---
+
+Every ZeroTier virtual network requires a *network controller* — a node responsible for admitting members, issuing certificates, and distributing network configuration. ZeroTier ships a reference controller implementation that is functionally identical to the one powering [my.zerotier.com](https://my.zerotier.com), differing only in its database backend.
+
+Running your own controller gives you full ownership of network membership data, removes the dependency on ZeroTier's hosted service, and lets you manage networks programmatically through a local JSON API.
+
+<Warning>
+  As of ZeroTier 1.16.0, the network controller is licensed under a commercial source-available license and is no longer part of the default binary build. You must build with `ZT_NONFREE=1` to include it. Building with this flag changes the license of the resulting binary from MPL to a proprietary commercial license. Review the license in `nonfree/LICENSE.md` before distributing.
+</Warning>
+
+## What the controller does
+
+When a node sends a `JOIN` request for a network, the controller:
+
+1. Looks up the network configuration from its data store.
+2. Decides whether to authorize the requesting member.
+3. Issues a signed network configuration certificate back to the member, which includes IP assignments, routing rules, and access control settings.
+
+Network IDs are 16 hex digits. The first 10 hex digits encode the controller's ZeroTier node address. A controller only manages networks whose IDs begin with its own address — any other network ID is silently ignored.
+
+## Building with controller support
+
+The controller source lives under `nonfree/controller/`. Include it in the build by passing `ZT_NONFREE=1`:
+
+<Tabs>
+  <Tab title="Linux / macOS">
+    ```bash
+    make ZT_NONFREE=1
+    ```
+  </Tab>
+  <Tab title="FreeBSD / OpenBSD">
+    ```bash
+    gmake ZT_NONFREE=1
+    ```
+  </Tab>
+</Tabs>
+
+The `ZT_CONTROLLER=1` variable is an alias — setting either one enables the nonfree controller objects:
+
+```bash
+# equivalent to ZT_NONFREE=1
+make ZT_CONTROLLER=1
+```
+
+<Note>
+  The Linux makefile automatically prefers Clang over GCC when both are installed. Override with `CC=gcc CXX=g++` on the command line.
+</Note>
+
+## Starting the controller
+
+Run the built binary as a daemon. It acts as both a ZeroTier node (joining the peer-to-peer mesh) and as a controller (responding to member join requests):
+
+```bash
+sudo ./zerotier-one -d
+```
+
+The controller API becomes available immediately at `http://127.0.0.1:9993/controller`. Find the node's address with:
+
+```bash
+zerotier-cli info
+```
+
+The first 10 hex characters of that address form the prefix for all networks this controller can manage.
+
+## Data storage
+
+Controller configuration is stored as JSON files under `controller.d/` inside the ZeroTier home directory:
+
+| Platform | Home directory |
+|----------|---------------|
+| Linux | `/var/lib/zerotier-one` |
+| FreeBSD / OpenBSD | `/var/db/zerotier-one` |
+| macOS | `/Library/Application Support/ZeroTier/One` |
+| Windows | `\ProgramData\ZeroTier\One` |
+
+The layout inside `controller.d/` is:
+
+```text
+controller.d/
+├── network/
+│   └── <network-id>.json        # per-network config
+└── member/
+    └── <network-id>/
+        └── <member-address>.json  # per-member config
+```
+
+<Warning>
+  Do not modify files in `controller.d/` while the controller is running. Writes to the filesystem while the controller holds the data in memory can cause data loss. Always use the API to make changes.
+</Warning>
+
+The JSON files can be safely copied, rsynced, or committed to a Git repository when the controller is stopped. This makes backups straightforward.
+
+## Controller API
+
+The controller exposes its management API through the same local HTTP socket that ZeroTier uses for all control-plane communication — port 9993 on `127.0.0.1`. All controller routes are prefixed with `/controller`.
+
+### Authentication
+
+Every request must include the auth token from `authtoken.secret`:
+
+<Tabs>
+  <Tab title="HTTP header">
+    ```bash
+    curl http://127.0.0.1:9993/controller/network \
+      -H "X-ZT1-Auth: $(cat /var/lib/zerotier-one/authtoken.secret)"
+    ```
+  </Tab>
+  <Tab title="Query parameter">
+    ```bash
+    curl "http://127.0.0.1:9993/controller/network?auth=$(cat /var/lib/zerotier-one/authtoken.secret)"
+    ```
+  </Tab>
+</Tabs>
+
+<Warning>
+  Avoid the `?auth=` query parameter in logged environments — request URLs are often written to access logs in plaintext.
+</Warning>
+
+### Common API operations
+
+<AccordionGroup>
+  <Accordion title="List networks">
+    ```bash
+    curl http://127.0.0.1:9993/controller/network \
+      -H "X-ZT1-Auth: <token>"
+    ```
+
+    Returns an array of network IDs managed by this controller.
+  </Accordion>
+
+  <Accordion title="Create a network">
+    ```bash
+    curl -X POST http://127.0.0.1:9993/controller/network/$(zerotier-cli info | awk '{print $3}')______ \
+      -H "X-ZT1-Auth: <token>" \
+      -H "Content-Type: application/json" \
+      -d '{}'
+    ```
+
+    POST to `/controller/network/<controller-address>______` (10-char address + 6 underscores) to create a new network with a generated ID.
+  </Accordion>
+
+  <Accordion title="Authorize a member">
+    ```bash
+    curl -X POST http://127.0.0.1:9993/controller/network/<network-id>/member/<member-address> \
+      -H "X-ZT1-Auth: <token>" \
+      -H "Content-Type: application/json" \
+      -d '{"authorized": true}'
+    ```
+  </Accordion>
+
+  <Accordion title="Assign a static IP to a member">
+    ```bash
+    curl -X POST http://127.0.0.1:9993/controller/network/<network-id>/member/<member-address> \
+      -H "X-ZT1-Auth: <token>" \
+      -H "Content-Type: application/json" \
+      -d '{"authorized": true, "ipAssignments": ["10.147.20.5"]}'
+    ```
+  </Accordion>
+</AccordionGroup>
+
+<Note>
+  The controller API is strict about types. Integers must be JSON integers, strings must be strings. Passing the wrong type may silently set a field to its default value. The full API schema is documented at [docs.zerotier.com/service/v1](https://docs.zerotier.com/service/v1#tag/controller).
+</Note>
+
+### Network ID format
+
+A valid network ID is 16 hex digits where the first 10 match your controller's ZeroTier address:
+
+```text
+<10-char-controller-address><6-char-network-suffix>
+```
+
+For example, if your controller address is `deadbeef12`, a valid network ID would be `deadbeef12abcd01`.
+
+## Prometheus metrics
+
+The controller exposes operational metrics at the `/metrics` endpoint. Metrics collection is disabled by default since version 1.16.1 and must be enabled in `local.conf`:
+
+```json local.conf
+{
+  "settings": {
+    "enableMetrics": true
+  }
+}
+```
+
+Once enabled, scrape metrics at:
+
+```bash
+curl http://127.0.0.1:9993/metrics \
+  -H "X-ZT1-Auth: <token>"
+```
+
+Available controller metrics:
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `controller_network_count` | Gauge | Number of networks the controller is serving. |
+| `controller_member_count` | Gauge | Number of network members across all networks. |
+| `controller_network_change_count` | Counter | Number of network configuration changes. |
+| `controller_member_change_count` | Counter | Number of member configuration changes. |
+| `controller_member_auth_count` | Counter | Number of member authorization events. |
+| `controller_member_deauth_count` | Counter | Number of member deauthorization events. |
+
+## Scalability
+
+A single controller can theoretically host up to **2²⁴ networks** (approximately 16 million) and serve many millions of member devices. In practice, ZeroTier recommends spreading large deployments across multiple controllers for load balancing and fault isolation.
+
+Controller performance is sensitive to storage I/O. Use a fast SSD or NVMe drive for the ZeroTier home directory on heavily loaded controllers.
+
+## High availability
+
+Because ZeroTier nodes use cryptographic addresses rather than fixed IPs, controller failover is straightforward:
+
+<Steps>
+  <Step title="Replicate the working directory">
+    Use `rsync`, a distributed filesystem, or any replication tool to keep the controller's home directory synchronized from primary to standby. The `controller.d/` subdirectory contains all network and member state.
+
+    ```bash
+    rsync -av /var/lib/zerotier-one/controller.d/ standby:/var/lib/zerotier-one/controller.d/
+    ```
+  </Step>
+  <Step title="Pre-provision the identity on the standby">
+    Copy `identity.public` and `identity.secret` from the primary to the standby. Both nodes must share the same identity so network IDs (which embed the controller address) remain valid after failover.
+  </Step>
+  <Step title="Use an orchestration tool for automatic failover">
+    Tools like Nomad and Kubernetes can monitor the primary controller and automatically start the standby when the primary becomes unreachable. The standby picks up from the most recent replicated state.
+  </Step>
+</Steps>
+
+<Tip>
+  Keep `controller.d/` under version control (e.g., Git) for an auditable history of network configuration changes. Just be careful to exclude `identity.secret` and `authtoken.secret`.
+</Tip>
+
+## Running in Docker
+
+Controllers do not create virtual network interfaces, so the extra host privileges needed for client mode (`--device /dev/net/tun`, `--cap-add NET_ADMIN`) are not required:
+
+```bash
+docker run \
+  --name zt-controller \
+  -p 9993:9993/udp \
+  -v zt-controller-data:/var/lib/zerotier-one \
+  -e ZEROTIER_API_SECRET="your-auth-token" \
+  my-zerotier-nonfree:latest
+```
+
+Map port `9993/udp` so that network members across the internet can reach the controller. The API port (`9993/tcp`) can be left unexposed or bound only to `127.0.0.1` depending on your security requirements.
+
+See [Docker deployment](/deployment/docker) for full image details and Compose examples.
+
+## Migrating from older versions
+
+Versions 1.1.14 and earlier stored controller data in a SQLite database (`controller.db`). If the controller finds this file in its working directory, it stops with an error rather than starting with corrupt or migrated state.
+
+Use the included migration utility:
+
+```bash
+cd nonfree/controller/migrate-sqlite
+npm install
+node migrate.js /path/to/controller.db /var/lib/zerotier-one/controller.d
+```

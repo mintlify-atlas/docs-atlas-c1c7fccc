@@ -1,0 +1,238 @@
+---
+title: "Security"
+description: "ZeroTier's security model — end-to-end encryption, identity verification, and trusted paths."
+---
+
+ZeroTier is built around the principle that the network infrastructure — root servers, relays, and even the ZeroTier Inc. cloud — should be unable to read or tamper with user traffic. This page documents the mechanisms that enforce this guarantee, along with their limitations and the operational decisions that affect security posture.
+
+## End-to-End Encryption
+
+All ZeroTier traffic between two endpoints is encrypted end-to-end using keys that only those two endpoints hold. The README states this directly:
+
+> "All ZeroTier traffic is encrypted end-to-end using secret keys that only you control. Most traffic flows peer-to-peer, though we offer free (but slow) relaying for users who cannot establish peer-to-peer connections."
+
+This means that even when traffic is relayed through a ZeroTier root server (when NAT traversal fails), the relay node sees only encrypted ciphertext. It cannot read the contents.
+
+### Cipher Suites
+
+ZeroTier supports three cipher suites, negotiated based on protocol version. Protocol version is declared in HELLO and stored in `Peer::_vProto`.
+
+<Tabs>
+  <Tab title="Salsa20/12 + Poly1305">
+    The original cipher suite, used when at least one peer does not support AES. Key agreement is Curve25519 ECDH. A 32-byte one-time-use Poly1305 key is derived from the first 32 bytes of the Salsa20/12 keystream; the remaining keystream encrypts the payload.
+
+    Suite constant: `ZT_PROTO_CIPHER_SUITE__C25519_POLY1305_SALSA2012 = 1`
+  </Tab>
+  <Tab title="AES-GMAC-SIV">
+    A faster authenticated encryption scheme backported from ZeroTier 2.x. Used when both peers support protocol v12 or higher (`Peer::aesKeysIfSupported()` returns non-null only when `_vProto >= 12`). Two AES keys are derived via KBKDF and stored in `Peer::_aesKeys[2]`.
+
+    Suite constant: `ZT_PROTO_CIPHER_SUITE__AES_GMAC_SIV = 3`
+  </Tab>
+  <Tab title="MAC-only (HELLO)">
+    Used only for initial HELLO packets in legacy mode — the public key must be transmitted in the clear for key agreement to bootstrap. Provides a Poly1305 MAC for integrity but no payload encryption.
+
+    Suite constant: `ZT_PROTO_CIPHER_SUITE__C25519_POLY1305_NONE = 0`
+  </Tab>
+</Tabs>
+
+---
+
+## Key Exchange and Session Establishment
+
+The symmetric session key between two peers is derived via **Curve25519 ECDH** using both nodes' ECC key pairs. This happens in `Peer`'s constructor and is performed via `Identity::agree()`:
+
+```cpp
+// node/Identity.hpp
+inline bool agree(const Identity& id, void* const key) const
+{
+    if (_privateKey) {
+        ECC::agree(*_privateKey, id._publicKey, key, ZT_SYMMETRIC_KEY_SIZE);
+        return true;
+    }
+    return false;
+}
+```
+
+The result is a 256-bit shared secret stored in `Peer::_key`. This key is deterministic: given the same two identities, both sides independently compute the identical secret without any round-trip negotiation. This makes ZeroTier's key exchange **zero-RTT** after identities are known.
+
+### Session Key Security
+
+- The key is burned (zeroed) in `Peer`'s destructor via `Utils::burn()` (`node/Peer.hpp:50`), ensuring keys do not linger in freed memory.
+- The private key in `Identity` is similarly zeroed on object destruction (`node/Identity.hpp:61`).
+- Keys are never transmitted over the network. Only public keys travel between peers, in HELLO packets.
+
+---
+
+## Encrypted HELLO (Protocol v13 / ZeroTier 1.16+)
+
+Prior to protocol version 13, HELLO packets were sent partially in the clear — necessary because HELLO carries the public key needed to bootstrap key agreement with previously unknown peers.
+
+Protocol v13 introduced two improvements to harden this:
+
+<CardGroup cols={2}>
+  <Card title="Ephemeral Keying" icon="key">
+    A second encryption pass using an ephemeral AES-CTR key is applied to the packet payload, flagged by `ZT_PROTO_FLAG_EXTENDED_ARMOR`. This hides the HELLO contents from passive observers even before a persistent session key is established.
+  </Card>
+  <Card title="Encrypted HELLO" icon="envelope">
+    HELLO packets are now encrypted to all peers **except** root servers. Roots still receive unencrypted HELLOs because they must be able to bootstrap new peers that have never contacted them before. Peer-to-peer HELLOs are encrypted.
+  </Card>
+</CardGroup>
+
+From `node/Packet.hpp`:
+
+```
+// Protocol version 13 - 1.16.0 ... CURRENT
+//    + Old deprecated "encrypted" flag removed
+//    + Ephemeral keying with second encryption pass to hide HELLO etc.
+//    + Encrypted HELLO packets to anyone but roots
+```
+
+---
+
+## Certificate of Membership
+
+The **Certificate of Membership (COM)** is how a node proves to its peers that it is currently authorized on a private network. The COM does not prove authorization to the controller — the controller already knows. It proves authorization to *other members*, peer-to-peer, without requiring every node to consult the controller for every packet.
+
+### How the COM Works
+
+The COM (`node/CertificateOfMembership.hpp`) contains:
+
+- A **timestamp** and maximum delta (default: ±30 minutes)
+- The **network ID**
+- The **member's ZeroTier address**
+- A **controller signature** (Ed25519)
+
+When two nodes on a private network want to communicate, they exchange COMs. `CertificateOfMembership::agreesWith()` checks that:
+
+1. Both COMs are for the same network
+2. The timestamps are within the allowed delta of each other
+3. The controller signature on each COM is valid
+
+If either COM is expired (timestamp too old) or forged (invalid signature), communication is blocked at the `Network::gate()` level — the frame is never delivered to the application.
+
+### Credential Freshness
+
+Members automatically re-fetch fresh NetworkConfigs (which contain new COMs) from the controller. The timing constants in `node/NetworkConfig.hpp`:
+
+| Constant | Value | Meaning |
+|----------|-------|---------|
+| `ZT_NETWORKCONFIG_DEFAULT_CREDENTIAL_TIME_DFL_MAX_DELTA` | 30 minutes | Default timestamp tolerance |
+| `ZT_NETWORKCONFIG_DEFAULT_CREDENTIAL_TIME_MAX_MAX_DELTA` | 2 hours | Maximum configurable tolerance |
+| `ZT_NETWORKCONFIG_DEFAULT_CREDENTIAL_TIME_MIN_MAX_DELTA` | 5 minutes | Minimum configurable tolerance |
+
+<Note>
+  If a node loses connectivity to its controller, its COM will eventually expire and peers will stop accepting frames from it. This is by design — it ensures that revoked members cannot continue communicating indefinitely after being removed.
+</Note>
+
+### Revocation
+
+The controller can immediately revoke a member's credentials using a `Revocation` object. Revocations propagate peer-to-peer via `Node::ncSendRevocation()` and are validated by each peer on receipt. This is faster than waiting for a COM to expire naturally.
+
+---
+
+## Trusted Paths
+
+Trusted paths are a **performance optimization** for high-trust physical network segments. When a physical network path is designated as trusted, ZeroTier skips encryption and authentication for packets travelling over it.
+
+From `include/ZeroTierOne.h`, the `ZT_PhysicalPathConfiguration` struct:
+
+```c
+typedef struct {
+    /**
+     * If non-zero set this physical network path to be trusted to disable
+     * encryption and authentication
+     */
+    uint64_t trustedPathId;
+
+    /**
+     * Physical path MTU from ZT_MIN_PHYSMTU and ZT_MAX_PHYSMTU or <= 0 to use default
+     */
+    int mtu;
+} ZT_PhysicalPathConfiguration;
+```
+
+A trusted path is identified by a numeric ID. When both ends of a path are configured with the same `trustedPathId` for the same physical subnet, packets on that path bypass cryptographic processing entirely.
+
+### When to Use Trusted Paths
+
+<AccordionGroup>
+  <Accordion title="Appropriate use cases">
+    - **Data center backplanes** where you already rely on physical security and need maximum throughput
+    - **Private leased lines** between sites where the link is inherently trusted
+    - **Benchmarking environments** where you want to measure raw switch performance without cryptographic overhead
+  </Accordion>
+  <Accordion title="Security tradeoff">
+    Enabling a trusted path means:
+    - Packets on that physical subnet are **not encrypted**
+    - Packets are **not authenticated** — a node on the same subnet could inject or replay frames
+    - The trusted path ID is visible in packet headers; any node on the subnet that knows this ID can send unauthenticated packets
+
+    The trusted path mechanism relies entirely on the physical isolation of the underlying network. If that isolation is compromised, so is the ZeroTier network.
+  </Accordion>
+</AccordionGroup>
+
+<Warning>
+  Do not enable trusted paths on any network segment that is not completely under your physical control. Public clouds, shared colocation facilities, and multi-tenant environments are not appropriate for trusted path use.
+</Warning>
+
+---
+
+## The authtoken.secret and Local API Security
+
+The ZeroTier service exposes a local JSON API on `127.0.0.1:<port>` (default port 9993). This API allows local processes to join/leave networks, query status, and change configuration. Access is controlled by a secret token.
+
+From the `zerotier-one` man page:
+
+> "Access to this API requires an authorization token normally found in the `authtoken.secret` file in the service's working directory."
+
+The token is sent in the `X-ZT1-Auth` HTTP header with each request.
+
+### Protecting the Local API
+
+<Steps>
+  <Step title="File permissions">
+    `authtoken.secret` is generated on first start from a secure random source. On Unix systems it should be readable only by root (or the user running the ZeroTier service). Verify with:
+    ```bash
+    ls -la /var/lib/zerotier-one/authtoken.secret
+    # Expected: -rw------- 1 root root ...
+    ```
+  </Step>
+  <Step title="Localhost binding">
+    The API only listens on `127.0.0.1`, not on public interfaces. Do not use reverse proxies or port forwarding to expose it to external networks unless you implement your own authentication layer.
+  </Step>
+  <Step title="Avoid sharing the token">
+    Applications that need to interact with the ZeroTier API should read `authtoken.secret` at startup from a privileged context, not store it in config files or environment variables accessible to untrusted processes.
+  </Step>
+</Steps>
+
+---
+
+## Identity Security Summary
+
+| Asset | Risk if Compromised | Mitigation |
+|-------|---------------------|------------|
+| `identity.secret` | Attacker can impersonate your node on any network; decrypt past traffic if ciphertext was captured | Restrict file permissions to root; back up offline; never transmit |
+| `authtoken.secret` | Attacker can control the local ZeroTier service (join networks, change config) | Restrict file permissions; do not expose the API remotely |
+| Controller `identity.secret` | Attacker can issue fraudulent COMs for all networks the controller manages | Treat as a CA private key; consider hardware security modules for production controllers |
+| Session keys (`Peer::_key`) | Allow decryption of captured traffic between two specific peers | Keys are in-memory only; burned on Peer destruction; no persistent exposure |
+
+---
+
+## Rate Limiting and Anti-Abuse
+
+The node implements several rate-limiting gates to resist abuse:
+
+- **Identity verification rate limit** (`Node::rateGateIdentityVerification`): limits how often an expensive identity validation is run per source IP address, preventing CPU exhaustion attacks via spoofed HELLO floods.
+- **Direct path push rate limit** (`Peer::rateGatePushDirectPaths`): prevents a peer from overwhelming the node with spurious path advertisements.
+- **WHOIS request rate limit** (`Peer::rateGateInboundWhoisRequest`): limits identity lookup requests per peer.
+- **Credential request rate limit** (`Peer::rateGateRequestCredentials`): limits how frequently a node requests a peer's credentials.
+
+---
+
+## Reporting Security Issues
+
+To report a security vulnerability in ZeroTier, contact:
+
+**security@zerotier.com**
+
+Do not open public GitHub issues for security vulnerabilities. Responsible disclosure allows ZeroTier to prepare a fix before the issue is publicly known.

@@ -1,0 +1,378 @@
+---
+title: "Installation"
+description: "Install ZeroTier One on Linux, macOS, Windows, FreeBSD, and OpenBSD."
+---
+
+ZeroTier One is the service daemon that connects your system to ZeroTier virtual networks. It runs in the background, manages peer connections, and exposes a local JSON API at `127.0.0.1:9993` that `zerotier-cli` and other tools use to control it.
+
+<Tabs>
+
+<Tab title="Linux">
+
+## Linux
+
+The recommended install method is the official script from zerotier.com. It auto-detects your distribution, adds the ZeroTier package repository, and installs the `zerotier-one` package.
+
+```bash
+curl -s https://install.zerotier.com | sudo bash
+```
+
+Supported distributions include Debian, Ubuntu, Fedora, CentOS, Rocky Linux, AlmaLinux, openSUSE, Arch Linux, and others. The script configures the repository for ongoing updates via your system's package manager.
+
+### Enable and start the service
+
+```bash
+sudo systemctl enable zerotier-one
+sudo systemctl start zerotier-one
+```
+
+### Verify installation
+
+```bash
+sudo zerotier-cli info
+```
+
+Expected output:
+
+```
+200 info a1b2c3d4e5 1.14.0 ONLINE
+```
+
+### Home directory
+
+ZeroTier stores its identity, network configurations, and API token in:
+
+```
+/var/lib/zerotier-one/
+```
+
+<Warning>
+  The `identity.secret` file in the home directory is your device's cryptographic identity. Back it up if you want to preserve your ZeroTier address across reinstalls. Anyone who obtains this file can impersonate your device on the network.
+</Warning>
+
+Key files in the home directory:
+
+| File | Description |
+|---|---|
+| `identity.secret` | Your private key and ZeroTier address — keep this safe |
+| `identity.public` | The public portion of your identity (your 10-digit address and public key) |
+| `authtoken.secret` | Token required to authenticate requests to the local JSON API |
+| `networks.d/` | Cached network configurations; ZeroTier rejoins these networks at startup |
+| `zerotier-one.port` | The port the local API is listening on (default: 9993) |
+
+</Tab>
+
+<Tab title="macOS">
+
+## macOS
+
+### Package installer
+
+Download the `.pkg` installer from [zerotier.com/download](https://www.zerotier.com/download/). Run it and follow the installer prompts. The service is registered as a `launchd` daemon and starts automatically at boot.
+
+Xcode command line tools are **not** required for the pre-built package.
+
+### Homebrew
+
+```bash
+brew install zerotier-one
+```
+
+After installing with Homebrew, load the launch daemon manually:
+
+```bash
+sudo launchctl load /Library/LaunchDaemons/com.zerotier.one.plist
+```
+
+To start automatically at boot, the `launchctl load` command with the plist handles this — it persists across reboots without any additional configuration.
+
+### Verify installation
+
+```bash
+sudo zerotier-cli info
+```
+
+Expected output:
+
+```
+200 info a1b2c3d4e5 1.14.0 ONLINE
+```
+
+### Home directory
+
+```
+/Library/Application Support/ZeroTier/One/
+```
+
+<Warning>
+  The `identity.secret` file in the home directory is your device's cryptographic identity. Back it up if you want to preserve your ZeroTier address across reinstalls.
+</Warning>
+
+</Tab>
+
+<Tab title="Windows">
+
+## Windows
+
+### MSI installer
+
+Download the MSI installer from [zerotier.com/download](https://www.zerotier.com/download/). Run the installer with administrator privileges and follow the setup wizard.
+
+The installer:
+
+- Installs the `ZeroTier One` Windows service, which starts automatically
+- Adds a system tray icon for quick access to network management
+- Installs `zerotier-cli.exe` and adds it to the system path
+
+### Verify installation
+
+Open a command prompt or PowerShell as administrator:
+
+```powershell
+zerotier-cli info
+```
+
+Expected output:
+
+```
+200 info a1b2c3d4e5 1.14.0 ONLINE
+```
+
+### Manage the service
+
+Use the Windows Services console (`services.msc`) or the system tray icon to start, stop, or restart ZeroTier One. You can also manage it from PowerShell:
+
+```powershell
+# Check service status
+Get-Service ZeroTierOneService
+
+# Start the service
+Start-Service ZeroTierOneService
+
+# Stop the service
+Stop-Service ZeroTierOneService
+```
+
+### Home directory
+
+```
+\ProgramData\ZeroTier\One\
+```
+
+<Note>
+  The `ProgramData` folder is hidden by default in Windows Explorer. You can access it by typing `%ProgramData%\ZeroTier\One` in the Explorer address bar or a Run dialog.
+</Note>
+
+</Tab>
+
+<Tab title="FreeBSD">
+
+## FreeBSD
+
+### Install the package
+
+```bash
+sudo pkg install zerotier
+```
+
+### Enable and start the service
+
+```bash
+sudo sysrc zerotier_enable="YES"
+sudo service zerotier start
+```
+
+The `sysrc` command writes `zerotier_enable="YES"` to `/etc/rc.conf`, ensuring the service starts at boot.
+
+### Build from source
+
+If you prefer to build from source, install the required tooling first:
+
+```bash
+sudo pkg install binutils gmake
+```
+
+Then clone the repository and build with GNU make:
+
+```bash
+gmake
+```
+
+Run the built binary as a daemon:
+
+```bash
+sudo ./zerotier-one -d
+```
+
+### Verify installation
+
+```bash
+sudo zerotier-cli info
+```
+
+Expected output:
+
+```
+200 info a1b2c3d4e5 1.14.0 ONLINE
+```
+
+### Home directory
+
+```
+/var/db/zerotier-one/
+```
+
+</Tab>
+
+<Tab title="OpenBSD">
+
+## OpenBSD
+
+ZeroTier One runs on OpenBSD, but with an important limitation.
+
+<Warning>
+  OpenBSD supports only four tap network devices (`/dev/tap0` through `/dev/tap3`), which means you can join a **maximum of four ZeroTier networks** simultaneously on a single OpenBSD system.
+</Warning>
+
+### Build from source
+
+OpenBSD does not have a ZeroTier binary package in the base ports tree. Build from source using GNU make:
+
+```bash
+sudo pkg_add gmake
+gmake
+```
+
+### Run the service
+
+```bash
+sudo ./zerotier-one -d
+```
+
+To start at boot, add the following to `/etc/rc.local`:
+
+```bash
+/path/to/zerotier-one -d
+```
+
+### Verify installation
+
+```bash
+sudo zerotier-cli info
+```
+
+Expected output:
+
+```
+200 info a1b2c3d4e5 1.14.0 ONLINE
+```
+
+### Home directory
+
+```
+/var/db/zerotier-one/
+```
+
+</Tab>
+
+<Tab title="Docker">
+
+## Docker
+
+ZeroTier One can run inside a Docker container. Because it creates virtual network interfaces, the container requires elevated capabilities.
+
+### Run a container and join a network
+
+Pass one or more 16-digit network IDs as command-line arguments. The container joins each network on startup and then sleeps until terminated.
+
+```bash
+docker run \
+  --name myzerotier \
+  --rm \
+  --cap-add NET_ADMIN \
+  --device /dev/net/tun \
+  zerotier/zerotier:latest <network-id>
+```
+
+Replace `<network-id>` with your 16-digit network ID. To join multiple networks, list them as additional arguments:
+
+```bash
+docker run \
+  --name myzerotier \
+  --rm \
+  --cap-add NET_ADMIN \
+  --device /dev/net/tun \
+  zerotier/zerotier:latest \
+  8056c2e21c000001 a09acf0233cabeef
+```
+
+### Check network status from a running container
+
+```bash
+docker exec myzerotier zerotier-cli listnetworks
+```
+
+### Environment variables
+
+You can configure the container's identity and authentication token through environment variables:
+
+| Variable | Description |
+|---|---|
+| `ZEROTIER_JOIN_NETWORKS` | Space-separated list of network IDs to join (alternative to CLI args) |
+| `ZEROTIER_API_SECRET` | Replaces `authtoken.secret` — sets the token for the local control API |
+| `ZEROTIER_IDENTITY_PUBLIC` | Contents of `identity.public` — use a pre-generated identity |
+| `ZEROTIER_IDENTITY_SECRET` | Contents of `identity.secret` — use a pre-generated identity |
+| `ZEROTIER_LOCAL_CONF` | Contents of `local.conf` — advanced local configuration |
+
+### Build a custom image
+
+The official `Dockerfile.release` builds against a Debian Buster base and supports multi-arch builds. Specify the ZeroTier version with the `VERSION` build argument:
+
+```bash
+docker build \
+  -f Dockerfile.release \
+  -t my-zerotier \
+  --build-arg VERSION=1.14.0 \
+  .
+```
+
+Additional build arguments:
+
+| Argument | Default | Description |
+|---|---|---|
+| `VERSION` | (required) | ZeroTier package version to install |
+| `ARCH` | `amd64` | Debian architecture string (e.g., `arm64`, `armhf`) |
+| `PACKAGE_BASEURL` | `https://download.zerotier.com/debian/buster/pool/main/z/zerotier-one/` | Package repository base URL |
+
+<Tip>
+  If you run ZeroTier in Docker for a high-traffic service, forward port `9993/udp` from the container so that peers can establish direct connections rather than falling back to relay.
+</Tip>
+
+<Note>
+  Joining a network does not guarantee connectivity immediately. After joining, authorize the container's ZeroTier identity in the network controller. Use `docker exec myzerotier zerotier-cli info` to get the device's 10-digit address.
+</Note>
+
+</Tab>
+
+</Tabs>
+
+---
+
+## Building from source
+
+Pre-built packages are available for all major platforms and are the recommended install method. If you need to compile ZeroTier One yourself — for example, on an unsupported platform or to apply custom patches — see the [building from source](/deployment/building-from-source) guide.
+
+The short version: clone the repository and run `make` on Linux and macOS, or `gmake` on FreeBSD and OpenBSD. Windows requires Visual Studio 2022 and the solution file in `windows/`.
+
+---
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Quick start" icon="rocket" href="/quickstart">
+    Join a network and verify connectivity in minutes
+  </Card>
+  <Card title="Core concepts" icon="lightbulb" href="/concepts/architecture">
+    Learn how ZeroTier's VL1 and VL2 layers work
+  </Card>
+</CardGroup>

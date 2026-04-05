@@ -1,0 +1,308 @@
+---
+title: "Controller members"
+description: "Authorize and configure devices that join your ZeroTier virtual networks."
+---
+
+When a ZeroTier node attempts to join a private network, the controller creates a member record for it and waits for an administrator to authorize it. Unauthorized members are denied network configuration and cannot exchange traffic with other members. This page documents the endpoints for managing network members.
+
+For background on the controller API — authentication, type rules, and data storage — see [Controller API overview](/api/controller-overview).
+
+## GET /controller/network/\<network-id\>/member
+
+Returns an object mapping each member's 10-digit ZeroTier address to its current config revision number. This is a lightweight listing that does not include full member details.
+
+```bash
+NETWORK_ID="deadbeef12a1b2c3"
+curl -H "X-ZT1-Auth: $(sudo cat /var/lib/zerotier-one/authtoken.secret)" \
+  http://127.0.0.1:9993/controller/network/$NETWORK_ID/member
+```
+
+```json
+{
+  "aabbccdd11": 3,
+  "1122334455": 1,
+  "ffeeddcc99": 7
+}
+```
+
+Each key is a 10-digit member address. Each value is the revision number of the member's configuration, incremented on every change. Returns `404` if the network does not exist.
+
+<Tip>
+  To fetch full details for every member, iterate over the keys and call `GET /controller/network/<id>/member/<address>` for each address. The `revision` values let you skip members whose configuration has not changed since your last poll.
+</Tip>
+
+---
+
+## GET /controller/network/\<network-id\>/member/\<address\>
+
+Returns the full configuration record for a single member.
+
+```bash
+NETWORK_ID="deadbeef12a1b2c3"
+ADDRESS="aabbccdd11"
+curl -H "X-ZT1-Auth: $(sudo cat /var/lib/zerotier-one/authtoken.secret)" \
+  http://127.0.0.1:9993/controller/network/$NETWORK_ID/member/$ADDRESS
+```
+
+Returns `404` if either the network or the member does not exist.
+
+---
+
+## POST /controller/network/\<network-id\>/member/\<address\>
+
+Creates or updates a member's configuration. Send only the fields you want to change — all other fields retain their current values. The full updated member object is returned.
+
+<Note>
+  You do not need to pre-create a member record. If no record exists, the controller initializes one with safe defaults and applies your changes. The member's `identity` field is populated automatically the first time the node itself attempts to join the network.
+</Note>
+
+### Request body
+
+<ParamField body="authorized" type="boolean" default="false">
+  Whether this member is allowed to communicate on the network. Set to `true` to authorize a device that has knocked on the network. Set to `false` to revoke access without deleting the member record.
+
+  When a member is authorized via the API, the controller records `"lastAuthorizedCredentialType": "api"` in the member config and pushes the updated network configuration to the member immediately if it is currently online.
+</ParamField>
+
+<ParamField body="activeBridge" type="boolean" default="false">
+  Allow this member to bridge other Ethernet networks into the ZeroTier network. Bridging members appear in the network configuration as specialists and can forward traffic on behalf of non-ZeroTier devices. Only enable this on trusted hosts with appropriate network access.
+</ParamField>
+
+<ParamField body="noAutoAssignIps" type="boolean" default="false">
+  Disable automatic IP address assignment from `ipAssignmentPools` for this specific member. The member can still have manually specified addresses in `ipAssignments`. Useful for routers, bridges, or nodes that should maintain a stable address across network reconfigurations.
+</ParamField>
+
+<ParamField body="ipAssignments" type="string[]">
+  Explicit IP addresses assigned to this member. These are IP addresses only (no prefix length) — the prefix length is derived from the network's `routes` table. The controller validates that each address is a valid IPv4 or IPv6 address and silently discards invalid entries.
+
+  Example: `["10.10.5.23", "fd00::1"]`
+
+  If you supply an address that does not fall within any managed route on the network, it will be stored but not pushed to the member as a static IP assignment.
+</ParamField>
+
+<ParamField body="name" type="string">
+  A human-readable name for this member (e.g., a hostname or role). Stored in the controller database and returned in API responses, but not transmitted to the member node itself.
+</ParamField>
+
+<ParamField body="capabilities" type="integer[]">
+  Array of capability IDs granted to this member. Capability IDs must correspond to capabilities defined in the network's `capabilities` array. The controller sorts and deduplicates this list before storing it.
+
+  Members only receive the rules from capabilities that are both defined on the network and listed in their `capabilities` field. Capabilities defined on the network but not listed here are not applied to this member.
+</ParamField>
+
+<ParamField body="tags" type="array[]">
+  Array of `[tagId, tagValue]` pairs, where both elements are integers. Tags are used in network flow rules to implement policy-based access control. For example, a rule might allow traffic only between members that share the same value for a given tag ID.
+
+  Example: `[[1000, 100], [2000, 200]]`
+
+  The controller merges these with any default tag values defined on the network.
+</ParamField>
+
+<ParamField body="remoteTraceTarget" type="string">
+  10-digit ZeroTier address of a node to receive remote trace data from this member. Used for debugging. Set to an empty string or omit to disable remote tracing for this member.
+</ParamField>
+
+<ParamField body="remoteTraceLevel" type="integer" default="0">
+  Verbosity level for remote trace data. `0` disables tracing. Higher values produce more trace output.
+</ParamField>
+
+### Examples
+
+<CodeGroup>
+
+```bash Authorize a new member
+NETWORK_ID="deadbeef12a1b2c3"
+ADDRESS="aabbccdd11"
+
+curl -X POST \
+  -H "X-ZT1-Auth: $(sudo cat /var/lib/zerotier-one/authtoken.secret)" \
+  -H "Content-Type: application/json" \
+  -d '{"authorized": true}' \
+  http://127.0.0.1:9993/controller/network/$NETWORK_ID/member/$ADDRESS
+```
+
+```bash Manually assign an IP address
+NETWORK_ID="deadbeef12a1b2c3"
+ADDRESS="aabbccdd11"
+
+curl -X POST \
+  -H "X-ZT1-Auth: $(sudo cat /var/lib/zerotier-one/authtoken.secret)" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "authorized": true,
+    "noAutoAssignIps": true,
+    "ipAssignments": ["10.10.0.1"]
+  }' \
+  http://127.0.0.1:9993/controller/network/$NETWORK_ID/member/$ADDRESS
+```
+
+```bash Grant capabilities and set tags
+NETWORK_ID="deadbeef12a1b2c3"
+ADDRESS="aabbccdd11"
+
+curl -X POST \
+  -H "X-ZT1-Auth: $(sudo cat /var/lib/zerotier-one/authtoken.secret)" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "authorized": true,
+    "capabilities": [1, 3],
+    "tags": [[1000, 50], [2000, 10]]
+  }' \
+  http://127.0.0.1:9993/controller/network/$NETWORK_ID/member/$ADDRESS
+```
+
+</CodeGroup>
+
+### Response
+
+The full member configuration object is returned.
+
+<ResponseField name="id" type="string">
+  10-digit hex ZeroTier address of this member.
+</ResponseField>
+
+<ResponseField name="address" type="string">
+  Same as `id`. Both fields are always present for compatibility.
+</ResponseField>
+
+<ResponseField name="nwid" type="string">
+  16-digit hex network ID this member belongs to.
+</ResponseField>
+
+<ResponseField name="authorized" type="boolean">
+  Whether this member is currently authorized to participate in the network.
+</ResponseField>
+
+<ResponseField name="activeBridge" type="boolean">
+  Whether this member is configured as an active bridge.
+</ResponseField>
+
+<ResponseField name="noAutoAssignIps" type="boolean">
+  Whether automatic IP assignment is disabled for this member.
+</ResponseField>
+
+<ResponseField name="ipAssignments" type="string[]">
+  Current IP addresses assigned to this member.
+</ResponseField>
+
+<ResponseField name="name" type="string">
+  Human-readable name for this member.
+</ResponseField>
+
+<ResponseField name="capabilities" type="integer[]">
+  Sorted, deduplicated list of capability IDs granted to this member.
+</ResponseField>
+
+<ResponseField name="tags" type="array[]">
+  Array of `[tagId, tagValue]` pairs assigned to this member.
+</ResponseField>
+
+<ResponseField name="identity" type="string">
+  The member's full ZeroTier identity public key. Populated automatically the first time the node knocks on the network. The controller uses this to prevent address collision attacks.
+</ResponseField>
+
+<ResponseField name="lastAuthorizedTime" type="integer">
+  Unix timestamp (milliseconds) of the most recent authorization. `0` if never authorized.
+</ResponseField>
+
+<ResponseField name="lastDeauthorizedTime" type="integer">
+  Unix timestamp (milliseconds) of the most recent deauthorization. `0` if never deauthorized.
+</ResponseField>
+
+<ResponseField name="lastAuthorizedCredentialType" type="string">
+  How the most recent authorization was granted. `"api"` for manual authorization via the controller API, `"public"` for automatic authorization on open networks, or `"token"` for token-based authorization.
+</ResponseField>
+
+<ResponseField name="vMajor" type="integer">
+  Major version number of the ZeroTier software running on this member, as reported in the last network config request.
+</ResponseField>
+
+<ResponseField name="vMinor" type="integer">
+  Minor version number.
+</ResponseField>
+
+<ResponseField name="vRev" type="integer">
+  Revision version number.
+</ResponseField>
+
+<ResponseField name="revision" type="integer">
+  Monotonically increasing counter incremented on every configuration change to this member record.
+</ResponseField>
+
+<ResponseField name="objtype" type="string">
+  Always `"member"`. Used internally by the database.
+</ResponseField>
+
+---
+
+## DELETE /controller/network/\<network-id\>/member/\<address\>
+
+Permanently removes a member record from the network. The controller stops issuing network configuration to this node. The response body is the member object as it existed immediately before deletion.
+
+```bash
+NETWORK_ID="deadbeef12a1b2c3"
+ADDRESS="aabbccdd11"
+
+curl -X DELETE \
+  -H "X-ZT1-Auth: $(sudo cat /var/lib/zerotier-one/authtoken.secret)" \
+  http://127.0.0.1:9993/controller/network/$NETWORK_ID/member/$ADDRESS
+```
+
+Returns `404` if the member or network does not exist.
+
+<Note>
+  **Deauthorizing vs. deleting a member** — these are meaningfully different operations:
+
+  - **Deauthorize** (POST with `{"authorized": false}`): The member record is kept. The node is denied network access immediately via a revocation message pushed to all online members. When the node next knocks on the network, it will appear in the member list in an unauthorized state, and you can re-authorize it without losing its IP assignments, tags, or capabilities.
+
+  - **Delete** (DELETE): The entire member record is erased from disk, including its IP assignments, tags, capabilities, and identity. If the node knocks on the network again, it appears as a brand-new member with no configuration. For private networks you will need to re-authorize it from scratch.
+
+  Use deauthorize when you want to temporarily revoke access or retain the configuration for later. Use delete when you want to permanently remove a device and reclaim its allocated IP address.
+</Note>
+
+---
+
+## Listing all members
+
+To retrieve full details for every member on a network, fetch the member list and then query each address individually:
+
+```bash
+NETWORK_ID="deadbeef12a1b2c3"
+TOKEN=$(sudo cat /var/lib/zerotier-one/authtoken.secret)
+
+# Get all member addresses
+MEMBERS=$(curl -s -H "X-ZT1-Auth: $TOKEN" \
+  http://127.0.0.1:9993/controller/network/$NETWORK_ID/member \
+  | python3 -c "import sys, json; print('\n'.join(json.load(sys.stdin).keys()))")
+
+# Fetch details for each member
+for ADDR in $MEMBERS; do
+  curl -s -H "X-ZT1-Auth: $TOKEN" \
+    http://127.0.0.1:9993/controller/network/$NETWORK_ID/member/$ADDR
+  echo
+done
+```
+
+Alternatively, use the unstable extended listing endpoint to retrieve all member records in a single request:
+
+```bash
+curl -H "X-ZT1-Auth: $(sudo cat /var/lib/zerotier-one/authtoken.secret)" \
+  http://127.0.0.1:9993/unstable/controller/network/$NETWORK_ID/member
+```
+
+```json
+{
+  "data": [
+    { "id": "aabbccdd11", "authorized": true, "ipAssignments": ["10.10.0.5"], ... },
+    { "id": "1122334455", "authorized": false, "ipAssignments": [], ... }
+  ],
+  "meta": {
+    "totalCount": 2,
+    "authorizedCount": 1
+  }
+}
+```
+
+<Warning>
+  The `/unstable/` prefix indicates this response format may change between releases without notice. It is useful for building UIs and dashboards but should not be relied upon for production automation.
+</Warning>
